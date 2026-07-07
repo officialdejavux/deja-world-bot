@@ -1,0 +1,23 @@
+{
+  "name": "deja-world-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DEJA WORLD BOT - a lightweight Telegram world for Deja.",
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "main": "dist/bot.js",
+  "scripts": {
+    "dev": "tsx watch src/bot.ts",
+    "build": "tsc",
+    "start": "node dist/bot.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "grammy": "^1.38.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
