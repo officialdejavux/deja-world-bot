@@ -1133,7 +1133,7 @@ async function applySuccessfulPayment(ctx: Context, payload: string): Promise<vo
   const offer = resolveOfferFromPayload(payload);
   const payment = ctx.message?.successful_payment;
 
-  if (!offer || !payment || !offer.stars) {
+  if (!offer || !payment || !offer.stars || payment.currency !== "XTR" || payment.total_amount !== offer.stars) {
     await ctx.reply(
       "Payment received, but this key is not recognized cleanly.\n\nUse /paysupport and send what you bought so I can review it.",
       { reply_markup: keyboardFromRows([[{ label: "Payment Support", callbackData: "DEJA_PAY_SUPPORT" }]]) }
@@ -1226,6 +1226,14 @@ async function sendChatPrompt(ctx: Context, key: string): Promise<void> {
 }
 
 async function sendPrettyGlimpse(ctx: Context): Promise<void> {
+  if (!ctx.from) return;
+  const user = await getUser(ctx.from.id);
+
+  if (!hasChatAccess(user)) {
+    await sendKeepChatting(ctx);
+    return;
+  }
+
   const index = Math.floor(Math.random() * moodGlimpses.length);
   const glimpse = moodGlimpses[index];
   await ctx.replyWithPhoto(toTelegramInput(glimpse.source), {
@@ -1670,7 +1678,7 @@ export function registerDejaAlwaysHandlers(bot: Bot): void {
 
   bot.on("pre_checkout_query", async (ctx) => {
     const offer = resolveOfferFromPayload(ctx.preCheckoutQuery.invoice_payload);
-    if (!offer?.stars) {
+    if (!offer?.stars || ctx.preCheckoutQuery.currency !== "XTR" || ctx.preCheckoutQuery.total_amount !== offer.stars) {
       await ctx.answerPreCheckoutQuery(false, {
         error_message: "This checkout door is not available right now. Please choose it again from Deja Always."
       });
