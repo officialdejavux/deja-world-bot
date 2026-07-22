@@ -230,6 +230,7 @@ async function main(): Promise<void> {
     { command: "admin", description: "Admin commands" },
     { command: "stats", description: "Admin stats" },
     { command: "analytics", description: "Admin analytics summary" },
+    { command: "funnel", description: "Admin funnel analytics" },
     { command: "recent_payments", description: "Admin recent Stars payments" },
     { command: "user_payments", description: "Admin user Stars payments" },
     { command: "private_drop", description: "Admin private drop by tier" },

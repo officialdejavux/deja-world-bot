@@ -458,6 +458,7 @@ async function sendPaymentInvoice(ctx: Context, product: PaymentProduct): Promis
 
   if (!stars) {
     const door = doorFromProduct(product);
+    await logEvent("locked_door_viewed", { userId: ctx.from?.id, door, reason: "manual_only" });
     await ctx.reply(
       "This access is manual review only right now.\n\nUse one of the direct payment doors, then send proof for review. It does not open automatically until it is confirmed.",
       {
@@ -471,6 +472,7 @@ async function sendPaymentInvoice(ctx: Context, product: PaymentProduct): Promis
     return;
   }
 
+  await logEvent("stars_checkout_opened", { userId: ctx.from?.id, offerId: offer.id, stars });
   await ctx.replyWithInvoice(
     offerLabel(offer),
     "Telegram Stars checkout for Deja Always. Access opens automatically after Telegram confirms the payment.",
@@ -491,6 +493,7 @@ function purchaseCardText(offer: ResolvedOffer, door: PaidDoorKey): string {
         "Access path:",
         "Manual review only right now. Use CashApp / PayPal / Venmo, then send proof so I can review it cleanly."
       ];
+  const nextStepLabel = door === "topup" ? "I Paid, Add My Messages" : "I Paid, Let Me In";
 
   return [
     door === "goddess"
@@ -499,7 +502,9 @@ function purchaseCardText(offer: ResolvedOffer, door: PaidDoorKey): string {
         ? "This is the closest door. Choose it cleanly."
         : door === "girlfriend"
           ? "This one is softer. Sweet, personal, and easy to come back to."
-          : "More time means more room to keep my attention.",
+          : offer.id === "messages_10"
+            ? "Start small. This is the first private key when you want to feel the door open without overthinking it."
+            : "More time means more room to keep my attention.",
     "",
     "You’re choosing:",
     offerLabel(offer),
@@ -512,7 +517,7 @@ function purchaseCardText(offer: ResolvedOffer, door: PaidDoorKey): string {
     "Manual support:",
     "CashApp / PayPal / Venmo are reviewed by me. Manual payments do not unlock automatically.",
     "",
-    "Once you’ve handled it, come back and tap “I Paid, Let Me In.” If it does not open right away, I’ll guide you to the next step.",
+    `Once you’ve handled it, come back and tap “${nextStepLabel}.” If it does not open right away, I’ll guide you to the next step.`,
     "",
     "Need help?",
     "/paysupport"
@@ -687,6 +692,7 @@ async function sendLetMeIn(ctx: Context, door: PaidDoorKey): Promise<void> {
     return;
   }
 
+  await logEvent("locked_door_viewed", { userId: ctx.from.id, door, reason: "let_me_in_without_access" });
   await ctx.reply(
     "I’ll open the next door once your payment is confirmed.\n\nIf it does not open automatically, use the request path here. Send the payment method, amount, and name it was sent under so I can review it cleanly.",
     {
@@ -758,6 +764,7 @@ function reupRows(user: UserRecord | undefined): Button[][] {
 function paidHomeKeyboard(user: UserRecord | undefined): InlineKeyboard {
   return keyboardFromRows([
     ...reupRows(user),
+    [{ label: "This Week’s Door", callbackData: "DEJA_WEEKLY_RHYTHM" }],
     [
       { label: "Today’s Note From Me", callbackData: "DEJA_TODAYS_NOTE" },
       { label: "Tell Me Your Mood", callbackData: "DEJA_TELL_MOOD" }
@@ -779,6 +786,10 @@ function paidHomeKeyboard(user: UserRecord | undefined): InlineKeyboard {
 
 function unpaidDejaAlwaysKeyboard(): InlineKeyboard {
   return keyboardFromRows([
+    [
+      { label: "First Private Key", callbackData: "DEJA_FIRST_KEY" },
+      { label: "This Week’s Door", callbackData: "DEJA_WEEKLY_RHYTHM" }
+    ],
     [
       { label: "Top Up Messages", callbackData: "DEJA_ALWAYS_TOPUP" },
       { label: "Girlfriend Access", callbackData: "DEJA_ALWAYS_ACCESS_girlfriend" }
@@ -814,7 +825,10 @@ function activeChatKeyboard(): InlineKeyboard {
 function lockedChatKeyboard(): InlineKeyboard {
   return keyboardFromRows([
     [
-      { label: "Top Up Messages", callbackData: "DEJA_ALWAYS_TOPUP" },
+      { label: "First Private Key", callbackData: "DEJA_FIRST_KEY" },
+      { label: "Top Up Messages", callbackData: "DEJA_ALWAYS_TOPUP" }
+    ],
+    [
       { label: "Girlfriend Access", callbackData: "DEJA_ALWAYS_ACCESS_girlfriend" }
     ],
     [
@@ -859,7 +873,9 @@ export async function sendDejaAlways(ctx: Context): Promise<void> {
         "",
         "I left a few doors open for you while I’m away.",
         "",
-        "Come in softly. Pick the kind of attention you want to keep close tonight.",
+        "Come in softly. This week has a rhythm now: a check-in, a voice note, a pretty glimpse, and a clean way to stay close when you want more.",
+        "",
+        "Pick the kind of attention you want to keep close tonight.",
         memoryLines.length ? `\n${memoryLines.join("\n")}` : undefined,
         "",
         automationDisclosure
@@ -882,9 +898,11 @@ export async function sendDejaAlways(ctx: Context): Promise<void> {
     [
       "Deja Always",
       "",
-      "This is my paid private world for the ones who want to feel closer to me when I’m not right here.",
+      user?.messageCount ? "Welcome back. You already know where the door is." : "This is my paid private world for the ones who want to feel closer to me when I’m not right here.",
       "",
       "Unlocking gives you a softer place to come back to: private prompts, mood doors, voice notes, pretty glimpses, Deja Always chat, reups, and access that feels more personal than a link list.",
+      "",
+      "If you want the cleanest first step, start with the First Private Key. It is small, instant, and enough to feel whether you want to stay closer.",
       "",
       "Telegram Stars unlock instantly inside the bot.",
       "CashApp / PayPal / Venmo are manual review only and do not open access automatically.",
@@ -994,8 +1012,11 @@ async function sendKeepChatting(ctx: Context): Promise<void> {
     return;
   }
 
+  if (ctx.from) {
+    await logEvent("locked_door_viewed", { userId: ctx.from.id, door: "chat", reason: "no_access" });
+  }
   await ctx.reply(
-    "This door is still locked, pretty thing.\n\nUnlock it with Stars for instant access, or request manual review if you used CashApp, PayPal, or Venmo.",
+    "This door is still locked, pretty thing.\n\nThe cleanest first key is 10 messages. Unlock with Stars for instant access, or request manual review if you used CashApp, PayPal, or Venmo.",
     { reply_markup: lockedChatKeyboard() }
   );
 }
@@ -1009,7 +1030,12 @@ async function sendTopUpMessages(ctx: Context): Promise<void> {
     .join("\n");
 
   await ctx.reply(
-    ["Top Up Messages\n\nFor when you want to keep talking without losing the mood.\n\nChoose how close you want to stay.", priceLines].filter(Boolean).join("\n\n"),
+    [
+      "Top Up Messages\n\nFor when you want to keep talking without losing the mood.\n\nNew here? Start with 10 messages as the first private key. Already close? Choose how much more room you want.",
+      priceLines
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
     {
       reply_markup: keyboardFromRows([
         [
@@ -1034,6 +1060,55 @@ async function sendTopUpChoice(ctx: Context, key: string): Promise<void> {
   }
 
   await sendPurchaseCard(ctx, { kind: "topup", option }, "DEJA_ALWAYS_TOPUP");
+}
+
+async function sendFirstPrivateKey(ctx: Context): Promise<void> {
+  if (ctx.from) {
+    await logEvent("first_key_viewed", { userId: ctx.from.id, offerId: topUpOptions[0].offerId });
+  }
+
+  await sendPurchaseCard(ctx, { kind: "topup", option: topUpOptions[0] }, "DEJA_ALWAYS");
+}
+
+async function sendWeeklyRhythm(ctx: Context): Promise<void> {
+  const user = ctx.from ? await getUser(ctx.from.id) : undefined;
+  if (ctx.from) {
+    await logEvent("weekly_rhythm_opened", {
+      userId: ctx.from.id,
+      hasAccess: hasChatAccess(user),
+      vibe: user?.conversationVibe
+    });
+  }
+
+  await ctx.reply(
+    [
+      "This Week’s Door",
+      "",
+      "A little rhythm so Deja World does not feel random.",
+      "",
+      "Monday: a soft check-in.",
+      "Wednesday: today’s worship is choosing one useful way to show up.",
+      "Friday: a voice note door.",
+      "Sunday: a good night note.",
+      "",
+      hasChatAccess(user)
+        ? "Your key is active, so start wherever the mood pulls you."
+        : "If you want the cleanest first step, start with the First Private Key."
+    ].join("\n"),
+    {
+      reply_markup: keyboardFromRows([
+        [
+          { label: "Today’s Note From Me", callbackData: "DEJA_TODAYS_NOTE" },
+          { label: "Voice Notes", callbackData: "VOICE_NOTES" }
+        ],
+        [
+          { label: "First Private Key", callbackData: "DEJA_FIRST_KEY" },
+          { label: "A More Intimate Look", callbackData: "DEJA_INTIMATE" }
+        ],
+        [{ label: "Back to Deja Always", callbackData: "DEJA_ALWAYS" }]
+      ])
+    }
+  );
 }
 
 function membershipMessage(option: MembershipOption, includeMore = false): string {
@@ -1114,6 +1189,10 @@ async function sendWhatDoIGet(ctx: Context): Promise<void> {
     "What Do You Get?\n\nYou get a reason to come back.\n\nA softer place to land, a prettier distraction, a private little world, and the feeling that Deja is still there when you want attention again.\n\n• extended chat access\n• girlfriend-style conversation\n• goddess-style options\n• voice note doors\n• gallery doors\n• private mood selections\n• top-up options\n• VIP access options\n• easy return menu",
     {
       reply_markup: keyboardFromRows([
+        [
+          { label: "First Private Key", callbackData: "DEJA_FIRST_KEY" },
+          { label: "This Week’s Door", callbackData: "DEJA_WEEKLY_RHYTHM" }
+        ],
         [
           { label: "Top Up Messages", callbackData: "DEJA_ALWAYS_TOPUP" },
           { label: "Girlfriend Access", callbackData: "DEJA_ALWAYS_ACCESS_girlfriend" }
@@ -1248,8 +1327,9 @@ export async function handleDejaAlwaysText(ctx: Context): Promise<boolean> {
 
   if (!hasChatAccess(user)) {
     await logEvent("user_ran_out_of_credits", { userId: ctx.from.id, source: "text" });
+    await logEvent("locked_door_viewed", { userId: ctx.from.id, door: "chat", reason: "text_without_access" });
     await ctx.reply(
-      "This door is still locked, pretty thing.\n\nUnlock it with Stars for instant access, or request manual review if you used CashApp, PayPal, or Venmo.",
+      "This door is still locked, pretty thing.\n\nThe cleanest first key is 10 messages. Unlock with Stars for instant access, or request manual review if you used CashApp, PayPal, or Venmo.",
       { reply_markup: lockedChatKeyboard() }
     );
     return true;
@@ -1289,6 +1369,16 @@ export function registerDejaAlwaysHandlers(bot: Bot): void {
   bot.callbackQuery("DEJA_ALWAYS", async (ctx) => {
     await ctx.answerCallbackQuery();
     await sendDejaAlways(ctx);
+  });
+
+  bot.callbackQuery("DEJA_FIRST_KEY", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await sendFirstPrivateKey(ctx);
+  });
+
+  bot.callbackQuery("DEJA_WEEKLY_RHYTHM", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await sendWeeklyRhythm(ctx);
   });
 
   bot.callbackQuery("DEJA_STATUS", async (ctx) => {

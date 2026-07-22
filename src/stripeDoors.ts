@@ -89,13 +89,13 @@ const areaDoorKeys: Record<StripeDoorArea, StripeDoorKey[]> = {
 };
 
 const paymentMenuCopy =
-  "Choose the door that feels right. Use the verified payment options below for access, soft support, and private digital experiences.";
+  "Choose the door that feels right. Stars is the clean instant path inside the bot. CashApp, PayPal, and Venmo stay manual, reviewed, and intentional.";
 
 const directPaymentCopy =
-  "Direct payment doors use CashApp, PayPal, or Venmo only. These links are for tributes, special requests, girlfriend-style consideration, and spoil options that happen inside Telegram.\n\nFor instant in-bot access, use Telegram Stars checkout inside Deja Always. Direct payments do not auto-open access inside Telegram.";
+  "Direct payment doors use CashApp, PayPal, or Venmo only. These links are for tributes, special requests, girlfriend-style consideration, and spoil options that happen inside Telegram.\n\nFor instant in-bot access, use Telegram Stars checkout inside Deja Always. Direct payments do not auto-open access inside Telegram. They need a clean manual review.";
 
 const supportCopy =
-  "Need help with a payment or access? Use Telegram Stars for instant access. For direct CashApp, PayPal, or Venmo support, send a clear message with what you purchased, the payment method, and the time of payment.";
+  "Need help with a payment or access? Use Telegram Stars for instant access. For CashApp, PayPal, or Venmo support, send what you purchased, the payment method, amount, and the time it was sent. Manual payments are reviewed before any key opens.";
 
 const termsCopy =
   "Deja World is an 18+ private digital experience. Payments are for digital access, support, interaction, or curated online experiences. No payment guarantees anything outside the stated digital offer. Be respectful, intentional, and clear.\n\nA little clarity, love: some doors here are automated to keep the world open when I’m away. Anything personally sent by me will be clear, and paid access does not promise live replies.";
@@ -116,11 +116,12 @@ function directPaymentMethods(): Array<Required<DirectPaymentMethod>> {
 function stripeAreaKeyboard(area: StripeDoorArea): InlineKeyboard {
   const keyboard = new InlineKeyboard();
 
+  keyboard.text("Instant Stars Access", "DEJA_ALWAYS").row();
+
   for (const door of doorsForArea(area)) {
     keyboard.text(door.label, `STRIPE_CONFIRM_${door.key}`).row();
   }
 
-  keyboard.text("Instant Stars Access", "DEJA_ALWAYS").row();
   keyboard.text("Main Menu", "MENU");
   return keyboard;
 }
@@ -218,6 +219,7 @@ async function notifyManualPaymentAdmins(ctx: Context, requestId: string, userId
 }
 
 export async function sendStripeArea(ctx: Context, area: StripeDoorArea, intro = "Or choose a payment door below."): Promise<void> {
+  await logEvent("manual_payment_door_opened", { userId: ctx.from?.id, area });
   await ctx.reply(`${intro}\n\n${directPaymentCopy}`, {
     reply_markup: stripeAreaKeyboard(area)
   });
@@ -234,8 +236,9 @@ async function sendDirectPaymentDoor(ctx: Context, key: string): Promise<void> {
     return;
   }
 
+  await logEvent("manual_payment_door_opened", { userId: ctx.from?.id, door: door.key, accessType: door.accessType });
   await ctx.reply(
-    `${door.label}\n\nChoose a verified direct payment method below.\n\nThis does not auto-unlock access. Telegram Stars is the instant access path.`,
+    `${door.label}\n\nChoose a verified direct payment method below only if you want manual review.\n\nThis does not auto-unlock access. Telegram Stars is the instant access path when you want the key to open inside the bot.`,
     {
       reply_markup: directPaymentKeyboard(door)
     }
@@ -264,7 +267,7 @@ export function registerStripeDoorHandlers(bot: Bot): void {
     await ctx.answerCallbackQuery();
     await logEvent("manual_review_started", { userId: ctx.from.id });
     await ctx.reply(
-      "Manual payments are reviewed. They do not unlock automatically.\n\nWhat was your payment for?",
+      "Manual payments are reviewed. They do not unlock automatically.\n\nPick what you sent it for so the request lands in the right place.",
       { reply_markup: manualTypeKeyboard() }
     );
   });
@@ -272,13 +275,14 @@ export function registerStripeDoorHandlers(bot: Bot): void {
   bot.callbackQuery(/^MANUAL_PAYMENT_TYPE_(message_credits|girlfriend|goddess|vip|private|other)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     await logEvent("manual_review_started", { userId: ctx.from.id, type: ctx.match[1] });
+    await logEvent("manual_payment_type_selected", { userId: ctx.from.id, type: ctx.match[1] });
     manualPaymentDrafts.set(String(ctx.from.id), {
       selectedType: ctx.match[1] as ManualPaymentType,
       createdAt: Date.now()
     });
 
     await ctx.reply(
-      "Good. Now send a short note or screenshot.\n\nInclude the payment method, amount, and what name it was sent under. I’ll review it manually."
+      "Good. Now send a short note or screenshot.\n\nInclude the payment method, amount, and what name it was sent under. I’ll review it manually before any key opens."
     );
   });
 

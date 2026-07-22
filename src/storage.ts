@@ -29,6 +29,12 @@ export type AnalyticsSummary = {
   topOffers: Array<{ offerId: string; count: number; stars: number }>;
 };
 
+export type FunnelSummary = {
+  last24Hours: Record<string, number>;
+  last7Days: Record<string, number>;
+  total: Record<string, number>;
+};
+
 export type PaymentRecord = {
   userId: string;
   offerId: string;
@@ -126,9 +132,15 @@ export type BotEventName =
   | "gallery_opened"
   | "voice_notes_opened"
   | "purchase_card_viewed"
+  | "first_key_viewed"
+  | "weekly_rhythm_opened"
+  | "locked_door_viewed"
   | "stars_invoice_sent"
+  | "stars_checkout_opened"
   | "stars_payment_success"
   | "manual_review_started"
+  | "manual_payment_door_opened"
+  | "manual_payment_type_selected"
   | "manual_proof_submitted"
   | "admin_approved"
   | "admin_denied"
@@ -314,6 +326,80 @@ export async function logEvent(
   } catch {
     // Event tracking should never interrupt the bot experience.
   }
+}
+
+const funnelEvents: BotEventName[] = [
+  "start",
+  "age_confirmed",
+  "mood_selected",
+  "deja_always_opened",
+  "first_key_viewed",
+  "weekly_rhythm_opened",
+  "purchase_card_viewed",
+  "stars_checkout_opened",
+  "stars_invoice_sent",
+  "stars_payment_success",
+  "manual_payment_door_opened",
+  "manual_review_started",
+  "manual_payment_type_selected",
+  "manual_proof_submitted",
+  "locked_door_viewed",
+  "voice_notes_opened",
+  "gallery_opened",
+  "chat_credit_consumed",
+  "user_ran_out_of_credits"
+];
+
+function zeroFunnelCounts(): Record<string, number> {
+  return Object.fromEntries(funnelEvents.map((event) => [event, 0]));
+}
+
+function addFunnelCount(counts: Record<string, number>, event: string): void {
+  counts[event] = (counts[event] ?? 0) + 1;
+}
+
+export async function getFunnelSummary(now = new Date()): Promise<FunnelSummary> {
+  const summary: FunnelSummary = {
+    last24Hours: zeroFunnelCounts(),
+    last7Days: zeroFunnelCounts(),
+    total: zeroFunnelCounts()
+  };
+
+  let raw = "";
+  try {
+    raw = await readFile(eventsFile, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return summary;
+    throw error;
+  }
+
+  const dayAgo = now.getTime() - 24 * 60 * 60 * 1000;
+  const weekAgo = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+  const tracked = new Set<string>(funnelEvents);
+
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+
+    try {
+      const record = JSON.parse(line) as { event?: string; createdAt?: string };
+      if (!record.event || !tracked.has(record.event)) continue;
+
+      const createdAt = new Date(record.createdAt ?? "").getTime();
+      addFunnelCount(summary.total, record.event);
+
+      if (Number.isFinite(createdAt) && createdAt >= weekAgo) {
+        addFunnelCount(summary.last7Days, record.event);
+      }
+
+      if (Number.isFinite(createdAt) && createdAt >= dayAgo) {
+        addFunnelCount(summary.last24Hours, record.event);
+      }
+    } catch {
+      // Keep analytics resilient if an event line is ever partially written.
+    }
+  }
+
+  return summary;
 }
 
 function normalizeUserRecord(record: UserRecord): UserRecord {

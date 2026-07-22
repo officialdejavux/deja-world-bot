@@ -10,6 +10,7 @@ import {
   expireStaleMemberships,
   getAnalyticsSummary,
   getBroadcastRecipients,
+  getFunnelSummary,
   getPendingAccessUsers,
   getPrivateDropRecipients,
   getRecentPayments,
@@ -20,6 +21,7 @@ import {
   removeUserAccess,
   type AccessType,
   type AnalyticsSummary,
+  type FunnelSummary,
   type PaymentRecord,
   type PrivateDropTier,
   type UserRecord
@@ -209,6 +211,48 @@ function formatAnalytics(summary: AnalyticsSummary, expiredCleaned: number): str
   ].join("\n");
 }
 
+const funnelLabels: Record<string, string> = {
+  start: "Started bot",
+  age_confirmed: "Confirmed entry",
+  mood_selected: "Chose mood",
+  deja_always_opened: "Opened Deja Always",
+  first_key_viewed: "Viewed first key",
+  weekly_rhythm_opened: "Opened weekly rhythm",
+  purchase_card_viewed: "Viewed purchase card",
+  stars_checkout_opened: "Tapped Stars checkout",
+  stars_invoice_sent: "Stars invoice sent",
+  stars_payment_success: "Stars payments complete",
+  manual_payment_door_opened: "Opened manual payment door",
+  manual_review_started: "Started manual review",
+  manual_payment_type_selected: "Chose manual payment type",
+  manual_proof_submitted: "Submitted manual proof",
+  locked_door_viewed: "Hit locked door",
+  voice_notes_opened: "Opened voice notes",
+  gallery_opened: "Opened gallery",
+  chat_credit_consumed: "Used chat credit",
+  user_ran_out_of_credits: "Ran out / locked chat"
+};
+
+function formatFunnelWindow(title: string, counts: Record<string, number>): string {
+  const lines = Object.entries(funnelLabels).map(([event, label]) => {
+    return `${label}: ${counts[event] ?? 0}`;
+  });
+
+  return [title, ...lines].join("\n");
+}
+
+function formatFunnel(summary: FunnelSummary): string {
+  return [
+    "Funnel Analytics",
+    "",
+    formatFunnelWindow("Last 24 hours", summary.last24Hours),
+    "",
+    formatFunnelWindow("Last 7 days", summary.last7Days),
+    "",
+    "Watch the gap between purchase cards, Stars checkout, and Stars payments. That is the conversion pressure point."
+  ].join("\n");
+}
+
 function manualAccessType(selectedType: string | undefined): AccessType | undefined {
   if (selectedType === "girlfriend" || selectedType === "goddess" || selectedType === "vip") return selectedType;
   if (selectedType === "private") return "vip";
@@ -303,6 +347,7 @@ export function registerAdminCommands(bot: Bot): void {
         "",
         "/stats - View simple bot stats",
         "/analytics - View payment, access, and user analytics",
+        "/funnel - View entry, checkout, and drop-off analytics",
         "/recent_payments [LIMIT] - View recent Stars payments",
         "/user_payments USER_ID - View one user's Stars payments",
         "/private_drop TIER Message text - Send a paid-tier drop after preview",
@@ -341,6 +386,17 @@ export function registerAdminCommands(bot: Bot): void {
     const summary = await getAnalyticsSummary();
     await logEvent("analytics_viewed", { adminId: ctx.from?.id });
     await ctx.reply(formatAnalytics(summary, expired.expired));
+  });
+
+  bot.command("funnel", async (ctx) => {
+    if (!isAdmin(ctx)) {
+      await deny(ctx);
+      return;
+    }
+
+    const summary = await getFunnelSummary();
+    await logEvent("analytics_viewed", { adminId: ctx.from?.id, view: "funnel" });
+    await ctx.reply(formatFunnel(summary));
   });
 
   bot.command("recent_payments", async (ctx) => {

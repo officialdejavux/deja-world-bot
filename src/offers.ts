@@ -38,7 +38,7 @@ export const paidOffers: PaidOffer[] = [
   {
     id: "messages_10",
     title: "10 Messages",
-    shortDescription: "A small key to keep the conversation open.",
+    shortDescription: "The first private key: 10 messages to open the conversation without overthinking it.",
     usdReferenceEnv: "TOPUP_10_PRICE",
     defaultUsdReference: "$15",
     starsEnv: "TOPUP_10_STARS",
