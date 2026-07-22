@@ -61,6 +61,7 @@ function formatUserStatus(user: UserRecord | undefined): string {
   if (!user) return "No local user record found.";
 
   const latestPayment = user.paymentHistory?.at(-1);
+  const latestPaymentLabel = latestPayment ? formatPaymentSummary(latestPayment) : undefined;
   const membershipStatus = effectiveMembershipStatus(user);
   const manualRequests = user.manualPaymentRequests?.length
     ? user.manualPaymentRequests
@@ -93,9 +94,7 @@ function formatUserStatus(user: UserRecord | undefined): string {
     user.membershipExpiresAt ? `Expires: ${user.membershipExpiresAt}` : "Expires: none",
     `Admin approval: ${user.adminApprovalStatus}`,
     user.lastPurchaseOfferId ? `Last purchase offer: ${user.lastPurchaseOfferId}` : "Last purchase offer: none",
-    latestPayment
-      ? `Last Stars payment: ${latestPayment.offerId} - ${latestPayment.stars} Stars - ${latestPayment.telegramPaymentChargeId}`
-      : "Last Stars payment: none",
+    latestPaymentLabel ? `Last payment: ${latestPaymentLabel}` : "Last payment: none",
     manualRequests,
     pending
   ]
@@ -151,18 +150,50 @@ function privateDropTierLabel(tier: PrivateDropTier): string {
   return `${accessLabel(tier)} Access`;
 }
 
-function shortChargeId(chargeId: string): string {
+function shortChargeId(chargeId: string | undefined): string {
+  if (!chargeId) return "none";
   return chargeId.length <= 10 ? chargeId : `...${chargeId.slice(-10)}`;
 }
 
+function formatUsdCents(cents: number | undefined, currency = "usd"): string | undefined {
+  if (!Number.isFinite(cents)) return undefined;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: currency.toUpperCase()
+  }).format((cents ?? 0) / 100);
+}
+
+function formatPaymentSummary(payment: PaymentRecord): string {
+  if (payment.provider === "stripe") {
+    return [
+      payment.offerId,
+      formatUsdCents(payment.amountCents, payment.currency),
+      `Stripe ${shortChargeId(payment.stripeCheckoutSessionId)}`
+    ]
+      .filter(Boolean)
+      .join(" - ");
+  }
+
+  return [
+    payment.offerId,
+    `${payment.stars ?? 0} Stars`,
+    shortChargeId(payment.telegramPaymentChargeId)
+  ].join(" - ");
+}
+
 function formatPaymentLine(payment: PaymentRecord): string {
+  const isStripe = payment.provider === "stripe";
   return [
     `${payment.createdAt}`,
     `User: ${payment.userId}`,
     `Offer: ${payment.offerId}`,
-    `Stars: ${payment.stars}`,
+    `Provider: ${isStripe ? "Stripe" : "Telegram Stars"}`,
+    isStripe ? `Amount: ${formatUsdCents(payment.amountCents, payment.currency) ?? "unknown"}` : `Stars: ${payment.stars ?? 0}`,
     payment.usdReference ? `Ref: ${payment.usdReference}` : undefined,
-    `Charge: ${shortChargeId(payment.telegramPaymentChargeId)}`,
+    isStripe
+      ? `Checkout session: ${shortChargeId(payment.stripeCheckoutSessionId)}`
+      : `Charge: ${shortChargeId(payment.telegramPaymentChargeId)}`,
+    isStripe && payment.stripePaymentIntentId ? `PaymentIntent: ${shortChargeId(payment.stripePaymentIntentId)}` : undefined,
     payment.delivered ? "Delivered" : "Not delivered",
     payment.refunded ? "Refunded" : undefined
   ]
@@ -171,15 +202,15 @@ function formatPaymentLine(payment: PaymentRecord): string {
 }
 
 function formatPayments(title: string, payments: PaymentRecord[]): string {
-  if (payments.length === 0) return `${title}\n\nNo Stars payments found yet.`;
+  if (payments.length === 0) return `${title}\n\nNo payments found yet.`;
 
   return `${title}\n\n${payments.map(formatPaymentLine).join("\n\n")}`;
 }
 
 function formatAnalytics(summary: AnalyticsSummary, expiredCleaned: number): string {
   const topOffers = summary.topOffers.length
-    ? summary.topOffers.map((offer) => `${offer.offerId}: ${offer.count} purchase(s), ${offer.stars} Stars`).join("\n")
-    : "No Stars offers purchased yet.";
+    ? summary.topOffers.map((offer) => `${offer.offerId}: ${offer.count} purchase(s), ${offer.stars} Stars tracked`).join("\n")
+    : "No offers purchased yet.";
 
   return [
     "Analytics",
@@ -200,6 +231,8 @@ function formatAnalytics(summary: AnalyticsSummary, expiredCleaned: number): str
     "",
     `Successful Stars payments: ${summary.successfulStarsPayments}`,
     `Total Stars collected: ${summary.totalStarsCollected}`,
+    `Successful Stripe payments: ${summary.successfulStripePayments}`,
+    `Stripe revenue tracked: ${formatUsdCents(summary.totalStripeRevenueCents) ?? "$0.00"}`,
     "",
     "Active access keys:",
     `Girlfriend: ${summary.accessCounts.girlfriend}`,
@@ -222,6 +255,10 @@ const funnelLabels: Record<string, string> = {
   stars_checkout_opened: "Tapped Stars checkout",
   stars_invoice_sent: "Stars invoice sent",
   stars_payment_success: "Stars payments complete",
+  stripe_checkout_created: "Card checkout created",
+  stripe_checkout_opened: "Tapped card checkout",
+  stripe_payment_success: "Card payments complete",
+  stripe_webhook_received: "Stripe webhooks received",
   manual_payment_door_opened: "Opened manual payment door",
   manual_review_started: "Started manual review",
   manual_payment_type_selected: "Chose manual payment type",
@@ -249,7 +286,7 @@ function formatFunnel(summary: FunnelSummary): string {
     "",
     formatFunnelWindow("Last 7 days", summary.last7Days),
     "",
-    "Watch the gap between purchase cards, Stars checkout, and Stars payments. That is the conversion pressure point."
+    "Watch the gap between purchase cards, checkout taps, and confirmed payments. That is the conversion pressure point."
   ].join("\n");
 }
 
@@ -348,8 +385,8 @@ export function registerAdminCommands(bot: Bot): void {
         "/stats - View simple bot stats",
         "/analytics - View payment, access, and user analytics",
         "/funnel - View entry, checkout, and drop-off analytics",
-        "/recent_payments [LIMIT] - View recent Stars payments",
-        "/user_payments USER_ID - View one user's Stars payments",
+        "/recent_payments [LIMIT] - View recent payments",
+        "/user_payments USER_ID - View one user's payments",
         "/private_drop TIER Message text - Send a paid-tier drop after preview",
         "/expire_access - Mark stale memberships as expired",
         "/broadcast Message text - Preview a broadcast before sending it",
@@ -413,7 +450,7 @@ export function registerAdminCommands(bot: Bot): void {
     }
 
     const payments = await getRecentPayments(limit);
-    await ctx.reply(formatPayments("Recent Stars Payments", payments));
+    await ctx.reply(formatPayments("Recent Payments", payments));
   });
 
   bot.command("user_payments", async (ctx) => {
@@ -429,7 +466,7 @@ export function registerAdminCommands(bot: Bot): void {
     }
 
     const payments = await getUserPayments(userId);
-    await ctx.reply(formatPayments(`Stars Payments for ${userId}`, payments));
+    await ctx.reply(formatPayments(`Payments for ${userId}`, payments));
   });
 
   bot.command("expire_access", async (ctx) => {

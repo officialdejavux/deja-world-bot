@@ -18,6 +18,7 @@ import {
 import { sendVoiceCategory, sendVoiceNoteItem, sendVoiceNotes } from "./voiceNotes.js";
 import { sendTodaysWorship } from "./worship.js";
 import { registerWorldCommands, sendMainMenu } from "./world.js";
+import { registerStripeCheckoutHandlers, startStripeWebhookServer } from "./stripeCheckout.js";
 
 const bot = new Bot(config.botToken);
 
@@ -44,7 +45,7 @@ bot.command("about", async (ctx) => {
 
 bot.command("privacy", async (ctx) => {
   await ctx.reply(
-    "Privacy\n\nThis bot stores only minimal Telegram interaction data needed for the experience:\n\n- Telegram user ID\n- Username, if available\n- First name, if available\n- Mood choice\n- Stop/opt-out status\n- Basic message count and timestamps\n- Telegram Stars purchase confirmations, if you buy in-bot access\n- Manual payment review notes or screenshots, only if you send them\n\nIt does not store card details, payment method details, private documents, or control any creator account.\n\nUse /delete_my_data to remove your local bot profile.\nUse /stop to opt out of broadcasts."
+    "Privacy\n\nThis bot stores only minimal Telegram interaction data needed for the experience:\n\n- Telegram user ID\n- Username, if available\n- First name, if available\n- Mood choice\n- Stop/opt-out status\n- Basic message count and timestamps\n- Telegram Stars purchase confirmations, if you buy in-bot access\n- Stripe card checkout confirmations, if card checkout is enabled and used\n- Manual payment review notes or screenshots, only if you send them\n\nIt does not store card details, payment method details, private documents, or control any creator account.\n\nUse /delete_my_data to remove your local bot profile.\nUse /stop to opt out of broadcasts."
   );
 });
 
@@ -66,6 +67,7 @@ bot.command("stop", async (ctx) => {
 });
 
 registerAdminCommands(bot);
+registerStripeCheckoutHandlers(bot);
 
 bot.callbackQuery("CHOOSE_MOOD", async (ctx) => {
   await ctx.answerCallbackQuery();
@@ -201,6 +203,7 @@ bot.catch((error) => {
 
 async function main(): Promise<void> {
   await ensureStorage();
+  startStripeWebhookServer(bot);
 
   const userCommands = [
     { command: "start", description: "Enter Divine Deja" },
@@ -231,8 +234,8 @@ async function main(): Promise<void> {
     { command: "stats", description: "Admin stats" },
     { command: "analytics", description: "Admin analytics summary" },
     { command: "funnel", description: "Admin funnel analytics" },
-    { command: "recent_payments", description: "Admin recent Stars payments" },
-    { command: "user_payments", description: "Admin user Stars payments" },
+    { command: "recent_payments", description: "Admin recent payments" },
+    { command: "user_payments", description: "Admin user payments" },
     { command: "private_drop", description: "Admin private drop by tier" },
     { command: "expire_access", description: "Admin expire stale access" },
     { command: "broadcast", description: "Admin broadcast" },

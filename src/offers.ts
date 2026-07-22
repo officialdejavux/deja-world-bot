@@ -18,6 +18,9 @@ export type PaidOffer = {
   id: OfferId;
   title: string;
   shortDescription: string;
+  stripeName: string;
+  stripeDescription: string;
+  stripeEligible?: boolean;
   usdReferenceEnv?: string;
   defaultUsdReference?: string;
   starsEnv?: string;
@@ -39,6 +42,8 @@ export const paidOffers: PaidOffer[] = [
     id: "messages_10",
     title: "10 Messages",
     shortDescription: "The first private key: 10 messages to open the conversation without overthinking it.",
+    stripeName: "Digital Message Credit Pack - 10",
+    stripeDescription: "Ten digital message credits for access inside the Dasiaglamservices private digital experience.",
     usdReferenceEnv: "TOPUP_10_PRICE",
     defaultUsdReference: "$15",
     starsEnv: "TOPUP_10_STARS",
@@ -51,6 +56,8 @@ export const paidOffers: PaidOffer[] = [
     id: "messages_30",
     title: "30 Messages",
     shortDescription: "More room to stay close without breaking the mood.",
+    stripeName: "Digital Message Credit Pack - 30",
+    stripeDescription: "Thirty digital message credits for access inside the Dasiaglamservices private digital experience.",
     usdReferenceEnv: "TOPUP_30_PRICE",
     defaultUsdReference: "$35",
     starsEnv: "TOPUP_30_STARS",
@@ -63,6 +70,8 @@ export const paidOffers: PaidOffer[] = [
     id: "messages_60",
     title: "60 Messages",
     shortDescription: "A longer key for the ones who know they will come back.",
+    stripeName: "Digital Message Credit Pack - 60",
+    stripeDescription: "Sixty digital message credits for access inside the Dasiaglamservices private digital experience.",
     usdReferenceEnv: "TOPUP_60_PRICE",
     defaultUsdReference: "$65",
     starsEnv: "TOPUP_60_STARS",
@@ -75,6 +84,8 @@ export const paidOffers: PaidOffer[] = [
     id: "day_pass",
     title: "Day Pass",
     shortDescription: "One day inside the closer door.",
+    stripeName: "One-Day Digital Access Pass",
+    stripeDescription: "One day of digital access inside the Dasiaglamservices private digital experience.",
     usdReferenceEnv: "DAY_PASS_PRICE",
     defaultUsdReference: "$100",
     starsEnv: "DAY_PASS_STARS",
@@ -88,6 +99,8 @@ export const paidOffers: PaidOffer[] = [
     id: "girlfriend_access",
     title: "Girlfriend Access",
     shortDescription: "Soft attention, sweet check-ins, and a closer feeling.",
+    stripeName: "Digital Companion Access",
+    stripeDescription: "Thirty days of digital companion-style access and interactive messaging inside Dasiaglamservices.",
     usdReferenceEnv: "GIRLFRIEND_ACCESS_PRICE",
     starsEnv: "GIRLFRIEND_ACCESS_STARS",
     accessType: "girlfriend",
@@ -99,6 +112,8 @@ export const paidOffers: PaidOffer[] = [
     id: "girlfriend_weekly",
     title: "Weekly Girlfriend Experience",
     shortDescription: "A week of softer access, closer attention, and direct contact after unlock.",
+    stripeName: "Weekly Digital Companion Access",
+    stripeDescription: "Seven days of digital companion-style access and interactive messaging inside Dasiaglamservices.",
     usdReferenceEnv: "GIRLFRIEND_WEEKLY_PRICE",
     defaultUsdReference: "$100",
     starsEnv: "GIRLFRIEND_WEEKLY_STARS",
@@ -112,6 +127,8 @@ export const paidOffers: PaidOffer[] = [
     id: "girlfriend_monthly",
     title: "Monthly Girlfriend Experience",
     shortDescription: "The softer door kept open for a full month.",
+    stripeName: "Monthly Digital Companion Access",
+    stripeDescription: "Thirty days of digital companion-style access and interactive messaging inside Dasiaglamservices.",
     usdReferenceEnv: "GIRLFRIEND_MONTHLY_PRICE",
     defaultUsdReference: "$250",
     starsEnv: "GIRLFRIEND_MONTHLY_STARS",
@@ -125,6 +142,8 @@ export const paidOffers: PaidOffer[] = [
     id: "goddess_access",
     title: "Goddess Access",
     shortDescription: "Direction, devotion, and a more intentional key.",
+    stripeName: "Premium Digital Access",
+    stripeDescription: "Thirty days of premium digital access, prompts, and interactive messaging inside Dasiaglamservices.",
     usdReferenceEnv: "GODDESS_ACCESS_PRICE",
     starsEnv: "GODDESS_ACCESS_STARS",
     accessType: "goddess",
@@ -136,6 +155,8 @@ export const paidOffers: PaidOffer[] = [
     id: "vip_deja",
     title: "VIP Deja",
     shortDescription: "The closest key with more priority and a private feeling.",
+    stripeName: "VIP Digital Access",
+    stripeDescription: "Thirty days of VIP digital access, priority prompts, and interactive messaging inside Dasiaglamservices.",
     usdReferenceEnv: "VIP_DEJA_PRICE",
     starsEnv: "VIP_DEJA_STARS",
     accessType: "vip",
@@ -147,6 +168,9 @@ export const paidOffers: PaidOffer[] = [
     id: "intimate_gallery",
     title: "A More Intimate Look",
     shortDescription: "Seven private photographs unlocked once through Telegram Stars.",
+    stripeName: "Private Photo Gallery Access",
+    stripeDescription: "Private paid-media gallery access. This offer is handled through Telegram Stars only.",
+    stripeEligible: false,
     usdReferenceEnv: "INTIMATE_GALLERY_PRICE",
     defaultUsdReference: "$15",
     starsEnv: "INTIMATE_GALLERY_STARS",
@@ -199,6 +223,30 @@ export function offerLabel(offer: ResolvedOffer): string {
 
 export function offerPayload(offer: ResolvedOffer): string {
   return `deja:offer:${offer.id}`;
+}
+
+export function stripeOfferName(offer: ResolvedOffer): string {
+  return offer.stripeName;
+}
+
+export function stripeOfferDescription(offer: ResolvedOffer): string {
+  return offer.stripeDescription;
+}
+
+export function stripeAmountCents(offer: ResolvedOffer): number | undefined {
+  if (offer.stripeEligible === false || !offer.usdReference) return undefined;
+
+  const normalized = offer.usdReference.replace(/,/g, "").trim();
+  const match = normalized.match(/\$?\s*(\d+(?:\.\d{1,2})?)/);
+  if (!match) return undefined;
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return undefined;
+  return Math.round(amount * 100);
+}
+
+export function canUseStripeCheckout(offer: ResolvedOffer): boolean {
+  return offer.deliveryType !== "paid_media" && offer.stripeEligible !== false && Boolean(stripeAmountCents(offer));
 }
 
 export function resolveOfferFromPayload(payload: string): ResolvedOffer | undefined {

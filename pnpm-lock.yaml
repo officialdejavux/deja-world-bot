@@ -14,6 +14,9 @@ importers:
       grammy:
         specifier: ^1.38.4
         version: 1.44.0
+      stripe:
+        specifier: ^22.3.2
+        version: 22.3.2(@types/node@24.13.2)
     devDependencies:
       '@types/node':
         specifier: ^24.10.1
@@ -236,6 +239,15 @@ packages:
       encoding:
         optional: true
 
+  stripe@22.3.2:
+    resolution: {integrity: sha512-O13QOvgEIQvDlTy6Ubb5kB980wpbhmoZNsgCXKILjCMZS67f+bW+6w99k3gnSi/N1lkryoj1WYdpGT5Wc5edjg==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@types/node': '>=18'
+    peerDependenciesMeta:
+      '@types/node':
+        optional: true
+
   tr46@0.0.3:
     resolution: {integrity: sha512-N3WMsuqV66lT30CrXNbEjx4GEwlow3v6rr4mCcv6prnfwhS01rkgyFdjPNBYd9br7LpXV1+Emh01fHnq2Gdgrw==}
 
@@ -403,6 +415,10 @@ snapshots:
   node-fetch@2.7.0:
     dependencies:
       whatwg-url: 5.0.0
+
+  stripe@22.3.2(@types/node@24.13.2):
+    optionalDependencies:
+      '@types/node': 24.13.2
 
   tr46@0.0.3: {}
 

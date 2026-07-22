@@ -15,8 +15,11 @@ The experience is intentionally simple: users enter through a companion-style 18
 - Local JSON storage
 - Inline keyboards
 - Telegram-only admin commands
+- Optional Stripe Checkout for brand-safe card payments
 
-There is no web dashboard, no admin password, no database, no Redis, no Prisma, no webhook setup, and no Mini App.
+There is no web dashboard, no admin password, no database, no Redis, no Prisma, and no Mini App.
+
+Stripe is optional. When enabled, the bot runs one small HTTP endpoint for Stripe webhooks so card payments can be confirmed before access opens.
 
 ## Commands
 
@@ -49,8 +52,8 @@ Admins:
 - `/admin` - Show admin commands
 - `/stats` - Show simple stats
 - `/analytics` - Show payment, access, and user analytics
-- `/recent_payments [LIMIT]` - Show recent Stars payments
-- `/user_payments USER_ID` - Show one user's Stars payments
+- `/recent_payments [LIMIT]` - Show recent payments
+- `/user_payments USER_ID` - Show one user's payments
 - `/private_drop TIER Your message` - Preview and send a paid-tier private drop
 - `/expire_access` - Mark stale memberships as expired
 - `/broadcast Your message` - Preview and confirm a message to users who have not used `/stop`
@@ -148,6 +151,17 @@ Optional private door placeholders live in `.env.example`. Fill them only when y
 - `REDDIT_LINK`
 - `TELEGRAM_CHANNEL_LINK`
 
+Optional Stripe Checkout variables:
+
+- `STRIPE_CHECKOUT_ENABLED`
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `STRIPE_WEBHOOK_PATH`
+- `STRIPE_SUCCESS_URL`
+- `STRIPE_CANCEL_URL`
+
+Do not put real Stripe secrets in chat or commit them to Git. Add them only in `.env` locally or in Railway environment variables.
+
 4. Install dependencies:
 
 ```bash
@@ -193,7 +207,7 @@ If these files are missing, the bot creates them automatically.
 
 If you deploy to a host where files reset on redeploy, attach persistent storage or expect `data/users.json` to reset.
 
-Stars payment history, last purchase, access keys, credits, lightweight room memory, and manual payment review requests are stored locally in `data/users.json`.
+Stars payment history, Stripe payment history, last purchase, access keys, credits, lightweight room memory, and manual payment review requests are stored locally in `data/users.json`.
 
 ## Deja Always
 
@@ -206,25 +220,67 @@ After the 18+ acknowledgment, the bot now asks what mood the visitor wants befor
 - VIP Deja access
 - top-up message credits
 - Telegram Stars checkout
+- optional Stripe card checkout
 - My Access / My Status
 - Reup Same Package
 - admin approval
 - soft gated chatting when credits or access are available
 - a protected 18+ paid-media doorway named `A More Intimate Look`
 
-Top-ups and access checkout use Telegram Stars. Users pay through Telegram checkout, and the bot opens credits or access only after Telegram sends a confirmed payment event. The bot saves Telegram charge IDs so a confirmed payment cannot deliver the same credits or access twice.
+Top-ups and access checkout use Telegram Stars by default. Users pay through Telegram checkout, and the bot opens credits or access only after Telegram sends a confirmed payment event. The bot saves Telegram charge IDs so a confirmed payment cannot deliver the same credits or access twice.
+
+Stripe card checkout can be enabled for brand-safe digital access offers. The bot creates Checkout Sessions from `src/offers.ts`, then opens credits or access only after Stripe sends a signed `checkout.session.completed` webhook with paid status. The bot saves Stripe Checkout Session IDs so a confirmed card payment cannot deliver the same credits or access twice.
+
+Stripe product names are intentionally discreet but accurate, such as `Digital Message Credit Pack`, `Weekly Digital Companion Access`, and `VIP Digital Access`. Do not use Stripe for explicit adult content, explicit paid media, or anything that misrepresents what the customer receives.
 
 CashApp, PayPal, and Venmo stay direct payment doors for girlfriend-style consideration, spoil options, worship gifts, reups, and Telegram-only special requests.
 
 The direct payment doors are centralized in `src/stripeDoors.ts`. They appear as additional doors in girlfriend, private, entry, spoil, worship, and reup flows. They do not auto-unlock access. Users can send a manual review request with a note or screenshot, and admins can review those requests through `/pending`.
 
-Paid offers are centralized in `src/offers.ts`. Edit offer titles, displayed dollar references, Stars amounts, credit amounts, and access durations there so the button text and Telegram invoice stay aligned.
+Paid offers are centralized in `src/offers.ts`. Edit offer titles, displayed dollar references, Stars amounts, Stripe-safe product names, credit amounts, and access durations there so the button text, Telegram invoice, and card checkout stay aligned.
 
-For payment questions, users can send `/paysupport`. It shows their Telegram ID, current credits/access, last purchase, pending manual review status, and clear guidance for Stars versus direct payments.
+For payment questions, users can send `/paysupport`. It shows their Telegram ID, current credits/access, last purchase, pending manual review status, and clear guidance for Stars, card checkout, and direct payments.
 
 The bot uses Star amount placeholders like `TOPUP_10_STARS` and `GIRLFRIEND_MONTHLY_STARS`. The dollar copy is shown for clarity, but the in-bot charge itself is in Telegram Stars.
 
 `A More Intimate Look` uses Telegram paid media. Its seven files live only in `assets/intimate`, are not part of the public gallery, and unlock for `INTIMATE_GALLERY_STARS` after a separate 18+ confirmation. The default is 750 Stars with `$15` shown as the display price. Telegram handles the purchase and media unlock directly.
+
+`A More Intimate Look` is not eligible for Stripe Checkout in this codebase.
+
+## Stripe Setup
+
+Stripe is optional and should be used only for brand-safe digital access and message credit offers.
+
+1. Set Railway environment variables:
+
+```env
+STRIPE_CHECKOUT_ENABLED=true
+STRIPE_SECRET_KEY=your_stripe_secret_key
+STRIPE_WEBHOOK_SECRET=your_stripe_webhook_signing_secret
+STRIPE_WEBHOOK_PATH=/stripe/webhook
+STRIPE_SUCCESS_URL=https://t.me/DejaWorldBot?start=stripe_success
+STRIPE_CANCEL_URL=https://t.me/DejaWorldBot?start=stripe_cancel
+```
+
+2. Keep `BOT_TOKEN`, `ADMIN_TELEGRAM_IDS`, and `DATA_DIR=/data` set as before.
+
+3. In Stripe, add this webhook endpoint after the Railway service has a public domain:
+
+```text
+https://YOUR-RAILWAY-DOMAIN/stripe/webhook
+```
+
+4. Listen for:
+
+```text
+checkout.session.completed
+```
+
+5. Use the webhook signing secret from that exact endpoint as `STRIPE_WEBHOOK_SECRET`.
+
+6. Do a small test purchase first. Access should open only after the webhook arrives.
+
+Do not describe Stripe products as something false. Keep them discreet and safe, but accurate: digital message credits, digital companion access, premium digital access, VIP digital access, or similar brand-safe service language.
 
 ## Official Links
 

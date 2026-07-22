@@ -89,13 +89,13 @@ const areaDoorKeys: Record<StripeDoorArea, StripeDoorKey[]> = {
 };
 
 const paymentMenuCopy =
-  "Choose the door that feels right. Stars is the clean instant path inside the bot. CashApp, PayPal, and Venmo stay manual, reviewed, and intentional.";
+  "Choose the door that feels right. Stars is the clean instant path inside the bot. Card checkout opens after processor confirmation. CashApp, PayPal, and Venmo stay manual, reviewed, and intentional.";
 
 const directPaymentCopy =
-  "Direct payment doors use CashApp, PayPal, or Venmo only. These links are for tributes, special requests, girlfriend-style consideration, and spoil options that happen inside Telegram.\n\nFor instant in-bot access, use Telegram Stars checkout inside Deja Always. Direct payments do not auto-open access inside Telegram. They need a clean manual review.";
+  "Direct payment doors use CashApp, PayPal, or Venmo only. These links are for tributes, special requests, girlfriend-style consideration, and spoil options that happen inside Telegram.\n\nFor automatic in-bot access, use Telegram Stars or card checkout inside Deja Always. Direct payments do not auto-open access inside Telegram. They need a clean manual review.";
 
 const supportCopy =
-  "Need help with a payment or access? Use Telegram Stars for instant access. For CashApp, PayPal, or Venmo support, send what you purchased, the payment method, amount, and the time it was sent. Manual payments are reviewed before any key opens.";
+  "Need help with a payment or access? Use Telegram Stars for instant access or card checkout when it is offered. For CashApp, PayPal, or Venmo support, send what you purchased, the payment method, amount, and the time it was sent. Manual payments are reviewed before any key opens.";
 
 const termsCopy =
   "Deja World is an 18+ private digital experience. Payments are for digital access, support, interaction, or curated online experiences. No payment guarantees anything outside the stated digital offer. Be respectful, intentional, and clear.\n\nA little clarity, love: some doors here are automated to keep the world open when I’m away. Anything personally sent by me will be clear, and paid access does not promise live replies.";
@@ -238,7 +238,7 @@ async function sendDirectPaymentDoor(ctx: Context, key: string): Promise<void> {
 
   await logEvent("manual_payment_door_opened", { userId: ctx.from?.id, door: door.key, accessType: door.accessType });
   await ctx.reply(
-    `${door.label}\n\nChoose a verified direct payment method below only if you want manual review.\n\nThis does not auto-unlock access. Telegram Stars is the instant access path when you want the key to open inside the bot.`,
+    `${door.label}\n\nChoose a verified direct payment method below only if you want manual review.\n\nThis does not auto-unlock access. Telegram Stars is the instant path, and card checkout opens after processor confirmation when it is offered inside Deja Always.`,
     {
       reply_markup: directPaymentKeyboard(door)
     }

@@ -24,6 +24,8 @@ export type AnalyticsSummary = {
   deniedManualRequests: number;
   successfulStarsPayments: number;
   totalStarsCollected: number;
+  successfulStripePayments: number;
+  totalStripeRevenueCents: number;
   accessCounts: Record<AccessType, number>;
   membershipStatusCounts: Record<MembershipStatus, number>;
   topOffers: Array<{ offerId: string; count: number; stars: number }>;
@@ -35,12 +37,19 @@ export type FunnelSummary = {
   total: Record<string, number>;
 };
 
+export type PaymentProvider = "telegram_stars" | "stripe";
+
 export type PaymentRecord = {
   userId: string;
   offerId: string;
-  stars: number;
+  provider?: PaymentProvider;
+  stars?: number;
+  amountCents?: number;
+  currency?: string;
   usdReference?: string;
-  telegramPaymentChargeId: string;
+  telegramPaymentChargeId?: string;
+  stripeCheckoutSessionId?: string;
+  stripePaymentIntentId?: string;
   providerPaymentChargeId?: string;
   payload: string;
   createdAt: string;
@@ -138,6 +147,10 @@ export type BotEventName =
   | "stars_invoice_sent"
   | "stars_checkout_opened"
   | "stars_payment_success"
+  | "stripe_checkout_created"
+  | "stripe_checkout_opened"
+  | "stripe_payment_success"
+  | "stripe_webhook_received"
   | "manual_review_started"
   | "manual_payment_door_opened"
   | "manual_payment_type_selected"
@@ -339,6 +352,9 @@ const funnelEvents: BotEventName[] = [
   "stars_checkout_opened",
   "stars_invoice_sent",
   "stars_payment_success",
+  "stripe_checkout_created",
+  "stripe_checkout_opened",
+  "stripe_payment_success",
   "manual_payment_door_opened",
   "manual_review_started",
   "manual_payment_type_selected",
@@ -711,7 +727,7 @@ export async function getAnalyticsSummary(now = new Date()): Promise<AnalyticsSu
     const existing = offerCounts.get(payment.offerId) ?? { count: 0, stars: 0 };
     offerCounts.set(payment.offerId, {
       count: existing.count + 1,
-      stars: existing.stars + payment.stars
+      stars: existing.stars + (payment.stars ?? 0)
     });
   }
 
@@ -726,10 +742,16 @@ export async function getAnalyticsSummary(now = new Date()): Promise<AnalyticsSu
     pendingManualRequests: manualRequests.filter((request) => request.status === "pending").length,
     approvedManualRequests: manualRequests.filter((request) => request.status === "approved").length,
     deniedManualRequests: manualRequests.filter((request) => request.status === "denied").length,
-    successfulStarsPayments: payments.filter((payment) => payment.delivered && !payment.refunded).length,
+    successfulStarsPayments: payments.filter(
+      (payment) => payment.delivered && !payment.refunded && (payment.provider ?? "telegram_stars") === "telegram_stars"
+    ).length,
     totalStarsCollected: payments
-      .filter((payment) => payment.delivered && !payment.refunded)
-      .reduce((sum, payment) => sum + payment.stars, 0),
+      .filter((payment) => payment.delivered && !payment.refunded && (payment.provider ?? "telegram_stars") === "telegram_stars")
+      .reduce((sum, payment) => sum + (payment.stars ?? 0), 0),
+    successfulStripePayments: payments.filter((payment) => payment.delivered && !payment.refunded && payment.provider === "stripe").length,
+    totalStripeRevenueCents: payments
+      .filter((payment) => payment.delivered && !payment.refunded && payment.provider === "stripe")
+      .reduce((sum, payment) => sum + (payment.amountCents ?? 0), 0),
     accessCounts,
     membershipStatusCounts,
     topOffers: [...offerCounts.entries()]
@@ -1022,10 +1044,95 @@ export async function recordStarsPaymentDelivery(
   const payment: PaymentRecord = {
     userId: id,
     offerId: input.offerId,
+    provider: "telegram_stars",
     stars: input.stars,
     ...(input.usdReference ? { usdReference: input.usdReference } : {}),
     telegramPaymentChargeId: input.telegramPaymentChargeId,
     ...(input.providerPaymentChargeId ? { providerPaymentChargeId: input.providerPaymentChargeId } : {}),
+    payload: input.payload,
+    createdAt: now,
+    delivered: true,
+    deliveryResult: input.credits
+      ? `Added ${input.credits} message credits`
+      : input.accessType
+        ? `Opened ${input.accessType} access`
+        : "Payment recorded",
+    refunded: false
+  };
+
+  users[id] = {
+    telegramId: id,
+    ...(existing?.username ? { username: existing.username } : {}),
+    ...(existing?.firstName ? { firstName: existing.firstName } : {}),
+    mood: existing?.mood ?? "balanced",
+    ...accessFields(existing),
+    ...(input.credits ? { messageCredits: Math.max(0, (existing?.messageCredits ?? 0) + input.credits) } : {}),
+    ...(input.accessType
+      ? {
+          currentAccessType: input.accessType,
+          membershipStatus: "approved" as const,
+          membershipExpiresAt: membershipExpiration(input.durationDays ?? 30)
+        }
+      : {}),
+    lastPurchaseOfferId: input.offerId,
+    lastTopUpRequest: paidRequest,
+    adminApprovalStatus: "approved",
+    paymentHistory: [...history, payment].slice(-75),
+    stopped: existing?.stopped ?? false,
+    messageCount: existing?.messageCount ?? 0,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    lastSeenAt: now
+  };
+
+  await saveUsers(users);
+  return { user: users[id], payment, alreadyProcessed: false };
+}
+
+export type StripePaymentDeliveryInput = {
+  offerId: string;
+  amountCents: number;
+  currency: string;
+  usdReference?: string;
+  stripeCheckoutSessionId: string;
+  stripePaymentIntentId?: string;
+  payload: string;
+  credits?: number;
+  accessType?: AccessType;
+  durationDays?: number;
+  request: Omit<AccessRequest, "requestedAt" | "status">;
+};
+
+export async function recordStripePaymentDelivery(
+  telegramId: number | string,
+  input: StripePaymentDeliveryInput
+): Promise<{ user: UserRecord; payment: PaymentRecord; alreadyProcessed: boolean }> {
+  const users = await getUsers();
+  const id = String(telegramId);
+  const now = new Date().toISOString();
+  const existing = users[id];
+  const history = existing?.paymentHistory ?? [];
+  const processed = history.find((payment) => payment.stripeCheckoutSessionId === input.stripeCheckoutSessionId);
+
+  if (processed && existing) {
+    return { user: existing, payment: processed, alreadyProcessed: true };
+  }
+
+  const paidRequest: AccessRequest = {
+    ...input.request,
+    requestedAt: now,
+    status: "approved"
+  };
+
+  const payment: PaymentRecord = {
+    userId: id,
+    offerId: input.offerId,
+    provider: "stripe",
+    amountCents: input.amountCents,
+    currency: input.currency.toLowerCase(),
+    ...(input.usdReference ? { usdReference: input.usdReference } : {}),
+    stripeCheckoutSessionId: input.stripeCheckoutSessionId,
+    ...(input.stripePaymentIntentId ? { stripePaymentIntentId: input.stripePaymentIntentId } : {}),
     payload: input.payload,
     createdAt: now,
     delivered: true,

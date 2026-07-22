@@ -24,6 +24,7 @@ import {
   type OfferId,
   type ResolvedOffer
 } from "./offers.js";
+import { stripeCheckoutAvailable } from "./stripeCheckout.js";
 
 type Button = {
   label: string;
@@ -294,6 +295,24 @@ function formatDate(value: string | undefined): string {
   return date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 }
 
+function formatUsdCents(cents: number | undefined, currency = "usd"): string | undefined {
+  if (!Number.isFinite(cents)) return undefined;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: currency.toUpperCase()
+  }).format((cents ?? 0) / 100);
+}
+
+function lastPaymentDetail(user: UserRecord | undefined, offer: ResolvedOffer | undefined): string {
+  const payment = user?.paymentHistory?.at(-1);
+  if (!offer) return "none yet";
+  if (!payment) return offerLabel(offer);
+  if (payment.provider === "stripe") {
+    return `${offerLabel(offer)} — ${formatUsdCents(payment.amountCents, payment.currency) ?? "card checkout"}`;
+  }
+  return `${offerLabel(offer)} — ${(payment.stars ?? 0).toLocaleString()} Stars`;
+}
+
 function latestPendingManual(user: UserRecord | undefined): string {
   const requests = user?.manualPaymentRequests ?? [];
   const request = [...requests].reverse().find((item) => item.status === "pending");
@@ -339,10 +358,10 @@ export async function sendUserStatus(ctx: Context): Promise<void> {
       `Credits: ${user?.messageCredits ?? 0} messages`,
       `Access: ${access}`,
       `Expires: ${formatDate(user?.membershipExpiresAt)}`,
-      `Last purchase: ${lastOffer ? `${offerLabel(lastOffer)}${lastPayment ? ` — ${lastPayment.stars.toLocaleString()} Stars` : ""}` : "none yet"}`,
+      `Last purchase: ${lastPaymentDetail(user, lastOffer)}`,
       `Manual review: ${latestPendingManual(user)}`,
       "",
-      lastOffer ? "Want to reup the same? Your last key is waiting below." : "When you want the door open, choose Stars for instant access or manual payment for review."
+      lastOffer ? "Want to reup the same? Your last key is waiting below." : "When you want the door open, choose Stars, card checkout, or manual payment for review."
     ].join("\n"),
     { reply_markup: statusKeyboard(user) }
   );
@@ -358,6 +377,9 @@ export async function sendPaymentSupport(ctx: Context): Promise<void> {
       "",
       "For Telegram Stars purchases:",
       "Send what you bought and what did not unlock. Stars purchases are the instant in-bot path.",
+      "",
+      "For card checkout:",
+      "Card payments open only after the payment processor confirms them. If your card was charged but the key did not open, send what you bought and your Telegram ID.",
       "",
       "For direct payments:",
       "CashApp, PayPal, and Venmo are reviewed manually and do not unlock automatically.",
@@ -514,10 +536,13 @@ function purchaseCardText(offer: ResolvedOffer, door: PaidDoorKey): string {
     "",
     ...accessLines,
     "",
-    "Manual support:",
-    "CashApp / PayPal / Venmo are reviewed by me. Manual payments do not unlock automatically.",
-    "",
-    `Once you’ve handled it, come back and tap “${nextStepLabel}.” If it does not open right away, I’ll guide you to the next step.`,
+      "Manual support:",
+      "CashApp / PayPal / Venmo are reviewed by me. Manual payments do not unlock automatically.",
+      "",
+      stripeCheckoutAvailable(offer)
+        ? "Card checkout:\nSecure card checkout is available for this door. Your key opens only after the payment processor confirms it.\n"
+        : undefined,
+      `Once you’ve handled it, come back and tap “${nextStepLabel}.” If it does not open right away, I’ll guide you to the next step.`,
     "",
     "Need help?",
     "/paysupport"
@@ -546,12 +571,16 @@ async function sendPurchaseCard(ctx: Context, product: PaymentProduct, backCallb
         label: "Send Manual Proof",
         callbackData: `MANUAL_PAYMENT_TYPE_${manualPaymentTypeForDoor(door)}`
       };
+  const cardCheckoutRows: Button[][] = stripeCheckoutAvailable(offer)
+    ? [[{ label: "Card Checkout", callbackData: `DEJA_STRIPE_OFFER_${offer.id}` }]]
+    : [];
 
   await logEvent("purchase_card_viewed", { userId: ctx.from?.id, offerId: offer.id, door, hasStars: Boolean(offer.stars) });
 
   await ctx.reply(purchaseCardText(offer, door), {
     reply_markup: keyboardFromRows([
       [primaryButton],
+      ...cardCheckoutRows,
       ...directPaymentRows(),
       [{ label: letMeInLabelForDoor(door), callbackData: `DEJA_LET_ME_IN_${door}` }],
       ...(door === "girlfriend" ? [[{ label: "What Happens Next", callbackData: "DEJA_GFE_NEXT" }]] : []),
@@ -905,6 +934,7 @@ export async function sendDejaAlways(ctx: Context): Promise<void> {
       "If you want the cleanest first step, start with the First Private Key. It is small, instant, and enough to feel whether you want to stay closer.",
       "",
       "Telegram Stars unlock instantly inside the bot.",
+      "Card checkout opens only after the payment processor confirms it.",
       "CashApp / PayPal / Venmo are manual review only and do not open access automatically.",
       memoryLines.length ? `\n${memoryLines.join("\n")}` : undefined,
       "",
@@ -1016,7 +1046,7 @@ async function sendKeepChatting(ctx: Context): Promise<void> {
     await logEvent("locked_door_viewed", { userId: ctx.from.id, door: "chat", reason: "no_access" });
   }
   await ctx.reply(
-    "This door is still locked, pretty thing.\n\nThe cleanest first key is 10 messages. Unlock with Stars for instant access, or request manual review if you used CashApp, PayPal, or Venmo.",
+	    "This door is still locked, pretty thing.\n\nThe cleanest first key is 10 messages. Unlock with Stars, use card checkout when it is offered, or request manual review if you used CashApp, PayPal, or Venmo.",
     { reply_markup: lockedChatKeyboard() }
   );
 }
@@ -1329,7 +1359,7 @@ export async function handleDejaAlwaysText(ctx: Context): Promise<boolean> {
     await logEvent("user_ran_out_of_credits", { userId: ctx.from.id, source: "text" });
     await logEvent("locked_door_viewed", { userId: ctx.from.id, door: "chat", reason: "text_without_access" });
     await ctx.reply(
-      "This door is still locked, pretty thing.\n\nThe cleanest first key is 10 messages. Unlock with Stars for instant access, or request manual review if you used CashApp, PayPal, or Venmo.",
+      "This door is still locked, pretty thing.\n\nThe cleanest first key is 10 messages. Unlock with Stars, use card checkout when it is offered, or request manual review if you used CashApp, PayPal, or Venmo.",
       { reply_markup: lockedChatKeyboard() }
     );
     return true;
@@ -1640,7 +1670,7 @@ export function registerDejaAlwaysHandlers(bot: Bot): void {
   bot.callbackQuery("DEJA_GFE_NEXT", async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      "What Happens Next\n\nChoose weekly or monthly, handle the payment door, then come back and tap “I Paid, Let Me In.”\n\nIf you use Stars, the key opens automatically when Telegram confirms it. If you use CashApp, PayPal, or Venmo, send proof for manual review.",
+      "What Happens Next\n\nChoose weekly or monthly, handle the payment door, then come back and tap “I Paid, Let Me In.”\n\nIf you use Stars or card checkout, the key opens after the payment processor confirms it. If you use CashApp, PayPal, or Venmo, send proof for manual review.",
       {
         reply_markup: keyboardFromRows([
           [
