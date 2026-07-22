@@ -37,7 +37,7 @@ export type FunnelSummary = {
   total: Record<string, number>;
 };
 
-export type PaymentProvider = "telegram_stars" | "stripe";
+export type PaymentProvider = "telegram_stars" | "stripe" | "manual";
 
 export type PaymentRecord = {
   userId: string;
@@ -50,6 +50,9 @@ export type PaymentRecord = {
   telegramPaymentChargeId?: string;
   stripeCheckoutSessionId?: string;
   stripePaymentIntentId?: string;
+  manualRequestId?: string;
+  manualPaymentType?: ManualPaymentType;
+  approvedByAdminId?: string;
   providerPaymentChargeId?: string;
   payload: string;
   createdAt: string;
@@ -782,11 +785,66 @@ export async function consumeChatCredit(telegramId: number | string): Promise<Us
   return users[id];
 }
 
-function membershipExpiration(days = 30): string {
-  const expires = new Date();
+function membershipExpiration(days = 30, existingExpiresAt?: string): string {
+  const existingExpires = existingExpiresAt ? new Date(existingExpiresAt).getTime() : NaN;
+  const expires = Number.isFinite(existingExpires) && existingExpires > Date.now() ? new Date(existingExpires) : new Date();
   expires.setUTCDate(expires.getUTCDate() + days);
   return expires.toISOString();
 }
+
+function manualAccessType(selectedType: ManualPaymentType): AccessType | undefined {
+  if (selectedType === "girlfriend" || selectedType === "goddess" || selectedType === "vip") return selectedType;
+  if (selectedType === "private") return "vip";
+  return undefined;
+}
+
+function latestManualRequestForAccess(
+  existing: UserRecord | undefined,
+  accessType: AccessType,
+  statuses: ManualPaymentStatus[]
+): ManualPaymentRequest | undefined {
+  return [...(existing?.manualPaymentRequests ?? [])]
+    .reverse()
+    .find((request) => statuses.includes(request.status) && manualAccessType(request.selectedType) === accessType);
+}
+
+function manualRequestWasRecorded(existing: UserRecord | undefined, requestId: string | undefined): boolean {
+  if (!requestId) return false;
+  return (existing?.paymentHistory ?? []).some((payment) => payment.provider === "manual" && payment.manualRequestId === requestId);
+}
+
+function markManualRequestApproved(
+  existing: UserRecord | undefined,
+  approvedRequestId: string | undefined,
+  approveAllPendingIfMissing = false
+): Pick<UserRecord, "manualPaymentRequests"> {
+  const requests = existing?.manualPaymentRequests ?? [];
+  if (!approvedRequestId) {
+    return approveAllPendingIfMissing ? markPendingManualRequests(existing, "approved") : { manualPaymentRequests: requests };
+  }
+
+  return {
+    manualPaymentRequests: requests.map((request) => {
+      return request.requestId === approvedRequestId ? { ...request, status: "approved" as const } : request;
+    })
+  };
+}
+
+function accessOfferId(accessType: AccessType): string | undefined {
+  if (accessType === "girlfriend") return "girlfriend_access";
+  if (accessType === "goddess") return "goddess_access";
+  if (accessType === "vip") return "vip_deja";
+  return undefined;
+}
+
+type ManualApprovalOptions = {
+  adminId?: number | string;
+  durationDays?: number;
+  offerId?: string;
+  label?: string;
+  usdReference?: string;
+  recordManualPayment?: boolean;
+};
 
 function markPendingManualRequests(
   existing: UserRecord | undefined,
@@ -800,11 +858,58 @@ function markPendingManualRequests(
   };
 }
 
-export async function approveUserAccess(telegramId: number | string, accessType: AccessType): Promise<UserRecord> {
+export async function approveUserAccess(
+  telegramId: number | string,
+  accessType: AccessType,
+  options: ManualApprovalOptions = {}
+): Promise<UserRecord> {
   const users = await getUsers();
   const id = String(telegramId);
   const now = new Date().toISOString();
   const existing = users[id];
+  const offerId = options.offerId ?? accessOfferId(accessType);
+  const pendingManual = latestManualRequestForAccess(existing, accessType, ["pending"]);
+  const matchedManual = pendingManual ?? latestManualRequestForAccess(existing, accessType, ["approved"]);
+  const alreadyRecordedManual = manualRequestWasRecorded(existing, matchedManual?.requestId);
+  const shouldRecordManualPayment = Boolean(options.recordManualPayment && offerId && !alreadyRecordedManual);
+  const expiresAt =
+    accessType === "none"
+      ? undefined
+      : alreadyRecordedManual && existing?.membershipExpiresAt
+        ? existing.membershipExpiresAt
+        : membershipExpiration(options.durationDays ?? 30, existing?.membershipExpiresAt);
+  const paidRequest: AccessRequest | undefined =
+    shouldRecordManualPayment && offerId
+      ? {
+          kind: "membership",
+          optionKey: offerId,
+          label: options.label ?? offerId,
+          ...(options.usdReference ? { price: options.usdReference } : {}),
+          accessType,
+          requestedAt: now,
+          status: "approved"
+        }
+      : existing?.lastTopUpRequest
+        ? { ...existing.lastTopUpRequest, status: "approved" as const }
+        : undefined;
+
+  const manualPayment: PaymentRecord | undefined =
+    shouldRecordManualPayment && offerId
+      ? {
+          userId: id,
+          offerId,
+          provider: "manual",
+          ...(options.usdReference ? { usdReference: options.usdReference } : {}),
+          ...(matchedManual ? { manualRequestId: matchedManual.requestId, manualPaymentType: matchedManual.selectedType } : {}),
+          ...(options.adminId ? { approvedByAdminId: String(options.adminId) } : {}),
+          payload: matchedManual ? `manual:${matchedManual.requestId}` : `manual_admin:${id}:${offerId}:${now}`,
+          createdAt: now,
+          delivered: true,
+          deliveryResult: expiresAt ? `Opened ${accessType} access until ${expiresAt}` : `Opened ${accessType} access`,
+          refunded: false
+        }
+      : undefined;
+  const history = existing?.paymentHistory ?? [];
 
   users[id] = {
     telegramId: id,
@@ -814,12 +919,12 @@ export async function approveUserAccess(telegramId: number | string, accessType:
     ...accessFields(existing),
     currentAccessType: accessType,
     membershipStatus: accessType === "none" ? "none" : "approved",
-    ...(accessType === "none" ? {} : { membershipExpiresAt: membershipExpiration() }),
+    ...(expiresAt ? { membershipExpiresAt: expiresAt } : {}),
     adminApprovalStatus: "approved",
-    ...(existing?.lastTopUpRequest
-      ? { lastTopUpRequest: { ...existing.lastTopUpRequest, status: "approved" as const } }
-      : {}),
-    ...markPendingManualRequests(existing, "approved"),
+    ...(offerId ? { lastPurchaseOfferId: offerId } : {}),
+    ...(paidRequest ? { lastTopUpRequest: paidRequest } : {}),
+    ...(manualPayment ? { paymentHistory: [...history, manualPayment].slice(-75) } : {}),
+    ...markManualRequestApproved(existing, pendingManual?.requestId, !options.recordManualPayment),
     stopped: existing?.stopped ?? false,
     messageCount: existing?.messageCount ?? 0,
     createdAt: existing?.createdAt ?? now,

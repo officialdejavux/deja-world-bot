@@ -1,6 +1,7 @@
 import { InlineKeyboard, type Bot, type Context } from "grammy";
 import { randomBytes } from "node:crypto";
 import { isAdminTelegramId } from "./config.js";
+import { getOffer, offerLabel, type OfferId } from "./offers.js";
 import {
   type AccessRequestKind,
   addUserCredits,
@@ -174,6 +175,16 @@ function formatPaymentSummary(payment: PaymentRecord): string {
       .join(" - ");
   }
 
+  if (payment.provider === "manual") {
+    return [
+      payment.offerId,
+      payment.usdReference,
+      payment.manualRequestId ? `Manual ${shortChargeId(payment.manualRequestId)}` : "Manual approval"
+    ]
+      .filter(Boolean)
+      .join(" - ");
+  }
+
   return [
     payment.offerId,
     `${payment.stars ?? 0} Stars`,
@@ -183,16 +194,27 @@ function formatPaymentSummary(payment: PaymentRecord): string {
 
 function formatPaymentLine(payment: PaymentRecord): string {
   const isStripe = payment.provider === "stripe";
+  const isManual = payment.provider === "manual";
   return [
     `${payment.createdAt}`,
     `User: ${payment.userId}`,
     `Offer: ${payment.offerId}`,
-    `Provider: ${isStripe ? "Stripe" : "Telegram Stars"}`,
-    isStripe ? `Amount: ${formatUsdCents(payment.amountCents, payment.currency) ?? "unknown"}` : `Stars: ${payment.stars ?? 0}`,
-    payment.usdReference ? `Ref: ${payment.usdReference}` : undefined,
+    `Provider: ${isStripe ? "Stripe" : isManual ? "Manual review" : "Telegram Stars"}`,
     isStripe
+      ? `Amount: ${formatUsdCents(payment.amountCents, payment.currency) ?? "unknown"}`
+      : isManual
+        ? "Amount: manual review"
+        : `Stars: ${payment.stars ?? 0}`,
+    payment.usdReference ? `Ref: ${payment.usdReference}` : undefined,
+    isManual
+      ? payment.manualRequestId
+        ? `Manual request: ${payment.manualRequestId}`
+        : "Manual request: admin approval"
+      : isStripe
       ? `Checkout session: ${shortChargeId(payment.stripeCheckoutSessionId)}`
       : `Charge: ${shortChargeId(payment.telegramPaymentChargeId)}`,
+    isManual && payment.manualPaymentType ? `Manual type: ${payment.manualPaymentType}` : undefined,
+    isManual && payment.approvedByAdminId ? `Approved by: ${payment.approvedByAdminId}` : undefined,
     isStripe && payment.stripePaymentIntentId ? `PaymentIntent: ${shortChargeId(payment.stripePaymentIntentId)}` : undefined,
     payment.delivered ? "Delivered" : "Not delivered",
     payment.refunded ? "Refunded" : undefined
@@ -307,6 +329,112 @@ function manualTypeLabel(selectedType: string | undefined): string {
   if (selectedType === "vip") return "VIP Access";
   if (selectedType === "private") return "Private Access";
   return "Other";
+}
+
+function offerIdForAccess(accessType: AccessType): OfferId | undefined {
+  if (accessType === "girlfriend") return "girlfriend_access";
+  if (accessType === "goddess") return "goddess_access";
+  if (accessType === "vip") return "vip_deja";
+  return undefined;
+}
+
+function approvalOfferDetails(accessType: AccessType): {
+  offerId?: OfferId;
+  label?: string;
+  usdReference?: string;
+  durationDays?: number;
+} {
+  const offerId = offerIdForAccess(accessType);
+  const offer = getOffer(offerId);
+
+  return {
+    ...(offerId ? { offerId } : {}),
+    ...(offer ? { label: offerLabel(offer) } : {}),
+    ...(offer?.usdReference ? { usdReference: offer.usdReference } : {}),
+    ...(offer?.durationDays ? { durationDays: offer.durationDays } : {})
+  };
+}
+
+function accessUnlockedKeyboard(accessType: AccessType): InlineKeyboard {
+  if (accessType === "vip") {
+    return new InlineKeyboard()
+      .text("VIP Lounge", "DEJA_VIP_LOUNGE")
+      .text("Priority Attention", "DEJA_VIP_PRIORITY")
+      .row()
+      .text("Private Mood Choices", "DEJA_VIP_MOODS")
+      .text("Early Gallery Drops", "DEJA_VIP_DROPS")
+      .row()
+      .text("Voice Note Door", "DEJA_VIP_VOICE")
+      .text("Hidden Buttons", "DEJA_VIP_HIDDEN")
+      .row()
+      .text("Back to Deja Always", "DEJA_ALWAYS")
+      .text("Main Menu", "MENU");
+  }
+
+  return new InlineKeyboard()
+    .text(`Open ${accessLabel(accessType)} Access`, `DEJA_UNLOCKED_${accessType}`)
+    .row()
+    .text("Back to Deja Always", "DEJA_ALWAYS")
+    .text("Main Menu", "MENU");
+}
+
+function accessUnlockedMessage(accessType: AccessType): string {
+  if (accessType === "vip") {
+    return "VIP Deja\n\nYour key is active. This is the closest door.\n\nVIP is for more priority, private mood choices, earlier little drops, and the kind of access casual visitors do not get.";
+  }
+
+  return `Your ${accessLabel(accessType)} key is open now.\n\nCome back to Deja Always. I left the door ready for you.`;
+}
+
+async function notifyApprovedUser(
+  ctx: Context,
+  user: UserRecord,
+  accessType: AccessType
+): Promise<{ delivered: boolean; detail: string }> {
+  try {
+    await ctx.api.sendMessage(user.telegramId, accessUnlockedMessage(accessType), {
+      reply_markup: accessUnlockedKeyboard(accessType)
+    });
+    return { delivered: true, detail: "delivered" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown Telegram delivery error";
+    return { delivered: false, detail: message };
+  }
+}
+
+async function approveAccessAndNotify(ctx: Context, userId: string, accessType: AccessType): Promise<void> {
+  const offer = approvalOfferDetails(accessType);
+  const user = await approveUserAccess(userId, accessType, {
+    recordManualPayment: true,
+    adminId: ctx.from?.id,
+    ...(offer.offerId ? { offerId: offer.offerId } : {}),
+    ...(offer.label ? { label: offer.label } : {}),
+    ...(offer.usdReference ? { usdReference: offer.usdReference } : {}),
+    ...(offer.durationDays ? { durationDays: offer.durationDays } : {})
+  });
+  const notification = await notifyApprovedUser(ctx, user, accessType);
+
+  await logEvent("admin_approved", {
+    userId,
+    adminId: ctx.from?.id,
+    accessType,
+    offerId: offer.offerId,
+    customerNotified: notification.delivered
+  });
+
+  await ctx.reply(
+    [
+      "Access approved.",
+      "",
+      `Offer: ${offer.label ?? offer.offerId ?? accessLabel(accessType)}`,
+      `Customer notification: ${notification.delivered ? "delivered" : "failed"}`,
+      notification.delivered ? undefined : `Delivery issue: ${notification.detail}`,
+      "",
+      formatUserStatus(user)
+    ]
+      .filter(Boolean)
+      .join("\n")
+  );
 }
 
 function latestPendingManual(user: UserRecord): NonNullable<UserRecord["manualPaymentRequests"]>[number] | undefined {
@@ -603,18 +731,7 @@ export function registerAdminCommands(bot: Bot): void {
       return;
     }
 
-    const user = await approveUserAccess(userId, accessType);
-    await logEvent("admin_approved", { userId, adminId: ctx.from?.id, accessType });
-    await ctx.reply(`Access approved.\n\n${formatUserStatus(user)}`);
-
-    try {
-      await ctx.api.sendMessage(
-        user.telegramId,
-        `Your ${accessLabel(accessType)} key is open now.\n\nCome back to Deja Always. I left the door ready for you.`
-      );
-    } catch {
-      // User may have blocked the bot or not opened it again.
-    }
+    await approveAccessAndNotify(ctx, userId, accessType);
   });
 
   bot.command("add_credits", async (ctx) => {
@@ -739,19 +856,8 @@ export function registerAdminCommands(bot: Bot): void {
       return;
     }
 
-    const user = await approveUserAccess(userId, accessType);
-    await logEvent("admin_approved", { userId, adminId: ctx.from.id, accessType });
     await ctx.answerCallbackQuery({ text: `${accessLabel(accessType)} access approved.` });
-    await ctx.reply(`Access approved.\n\n${formatUserStatus(user)}`);
-
-    try {
-      await ctx.api.sendMessage(
-        user.telegramId,
-        `Your ${accessLabel(accessType)} key is open now.\n\nCome back to Deja Always. I left the door ready for you.`
-      );
-    } catch {
-      // User may have blocked the bot or not opened it again.
-    }
+    await approveAccessAndNotify(ctx, userId, accessType);
   });
 
   bot.callbackQuery(/^ADMIN_CREDITS_(\d+)_(10|30|60)$/, async (ctx) => {
