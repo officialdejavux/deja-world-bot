@@ -123,22 +123,22 @@ function reupOptions(): ReupOption[] {
 function mainMenuKeyboard(): InlineKeyboard {
   return keyboardFromRows([
     [
+      { label: "Gallery", callbackData: "GALLERY" },
+      { label: "Voice Notes", callbackData: "VOICE_NOTES" }
+    ],
+    [
       { label: "The Soft Room", callbackData: "WORLD_SOFT" },
       { label: "The Goddess Room", callbackData: "WORLD_GODDESS" }
     ],
+    [{ label: "Deja Always", callbackData: "DEJA_ALWAYS" }],
     [
       { label: "After Hours", callbackData: "WORLD_AFTER_HOURS" },
-      { label: "Gallery", callbackData: "GALLERY" }
-    ],
-    [
-      { label: "Voice Notes", callbackData: "VOICE_NOTES" },
       { label: "Spoil Me 💎", callbackData: "WORLD_GIFTS" }
     ],
     [
       { label: "Worship 👑", callbackData: "WORLD_WORSHIP" },
       { label: "Reups ⚡", callbackData: "WORLD_REUPS" }
     ],
-    [{ label: "Deja Always", callbackData: "DEJA_ALWAYS" }],
     [
       { label: "Private Access", callbackData: "WORLD_PRIVATE" },
       { label: "Official Links", callbackData: "WORLD_OFFICIAL_LINKS" }

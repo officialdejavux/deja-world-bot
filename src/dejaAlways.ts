@@ -24,7 +24,6 @@ import {
   type OfferId,
   type ResolvedOffer
 } from "./offers.js";
-import { stripeCheckoutAvailable } from "./stripeCheckout.js";
 
 type Button = {
   label: string;
@@ -237,6 +236,11 @@ function letMeInLabelForDoor(door: PaidDoorKey): string {
   return "I Paid, Let Me In";
 }
 
+function proofLabelForDoor(door: PaidDoorKey): string {
+  if (door === "topup") return "Send Proof / Add My Messages";
+  return "Send Proof / Let Me In";
+}
+
 function payLabelForProduct(product: PaymentProduct, offer: ResolvedOffer): string {
   if (product.kind === "topup") return `Pay for ${offer.title}`;
   if (product.kind === "girlfriend") return `Pay for ${offer.title}`;
@@ -308,7 +312,7 @@ function lastPaymentDetail(user: UserRecord | undefined, offer: ResolvedOffer | 
   if (!offer) return "none yet";
   if (!payment) return offerLabel(offer);
   if (payment.provider === "stripe") {
-    return `${offerLabel(offer)} — ${formatUsdCents(payment.amountCents, payment.currency) ?? "card checkout"}`;
+    return `${offerLabel(offer)} — ${formatUsdCents(payment.amountCents, payment.currency) ?? "confirmed payment"}`;
   }
   return `${offerLabel(offer)} — ${(payment.stars ?? 0).toLocaleString()} Stars`;
 }
@@ -361,7 +365,7 @@ export async function sendUserStatus(ctx: Context): Promise<void> {
       `Last purchase: ${lastPaymentDetail(user, lastOffer)}`,
       `Manual review: ${latestPendingManual(user)}`,
       "",
-      lastOffer ? "Want to reup the same? Your last key is waiting below." : "When you want the door open, choose Stars, card checkout, or manual payment for review."
+      lastOffer ? "Want to reup the same? Your last key is waiting below." : "When you want the door open, choose Telegram Stars or send a manual payment for review."
     ].join("\n"),
     { reply_markup: statusKeyboard(user) }
   );
@@ -377,9 +381,6 @@ export async function sendPaymentSupport(ctx: Context): Promise<void> {
       "",
       "For Telegram Stars purchases:",
       "Send what you bought and what did not unlock. Stars purchases are the instant in-bot path.",
-      "",
-      "For card checkout:",
-      "Card payments open only after the payment processor confirms them. If your card was charged but the key did not open, send what you bought and your Telegram ID.",
       "",
       "For direct payments:",
       "CashApp, PayPal, and Venmo are reviewed manually and do not unlock automatically.",
@@ -515,8 +516,6 @@ function purchaseCardText(offer: ResolvedOffer, door: PaidDoorKey): string {
         "Access path:",
         "Manual review only right now. Use CashApp / PayPal / Venmo, then send proof so I can review it cleanly."
       ];
-  const nextStepLabel = door === "topup" ? "I Paid, Add My Messages" : "I Paid, Let Me In";
-
   return [
     door === "goddess"
       ? "Pretty choice. This door is for the ones who know attention is earned."
@@ -536,13 +535,10 @@ function purchaseCardText(offer: ResolvedOffer, door: PaidDoorKey): string {
     "",
     ...accessLines,
     "",
-      "Manual support:",
-      "CashApp / PayPal / Venmo are reviewed by me. Manual payments do not unlock automatically.",
-      "",
-      stripeCheckoutAvailable(offer)
-        ? "Card checkout:\nSecure card checkout is available for this door. Your key opens only after the payment processor confirms it.\n"
-        : undefined,
-      `Once you’ve handled it, come back and tap “${nextStepLabel}.” If it does not open right away, I’ll guide you to the next step.`,
+    "Manual support:",
+    "CashApp / PayPal / Venmo are reviewed by me. Manual payments do not unlock automatically.",
+    "",
+    `If you use a direct payment link, come back and tap “${proofLabelForDoor(door)}.” I’ll keep the request clean so it can be reviewed without guessing.`,
     "",
     "Need help?",
     "/paysupport"
@@ -571,8 +567,8 @@ async function sendPurchaseCard(ctx: Context, product: PaymentProduct, backCallb
         label: "Send Manual Proof",
         callbackData: `MANUAL_PAYMENT_TYPE_${manualPaymentTypeForDoor(door)}`
       };
-  const cardCheckoutRows: Button[][] = stripeCheckoutAvailable(offer)
-    ? [[{ label: "Card Checkout", callbackData: `DEJA_STRIPE_OFFER_${offer.id}` }]]
+  const proofRows: Button[][] = offer.stars
+    ? [[{ label: proofLabelForDoor(door), callbackData: `MANUAL_PAYMENT_TYPE_${manualPaymentTypeForDoor(door)}` }]]
     : [];
 
   await logEvent("purchase_card_viewed", { userId: ctx.from?.id, offerId: offer.id, door, hasStars: Boolean(offer.stars) });
@@ -580,8 +576,8 @@ async function sendPurchaseCard(ctx: Context, product: PaymentProduct, backCallb
   await ctx.reply(purchaseCardText(offer, door), {
     reply_markup: keyboardFromRows([
       [primaryButton],
-      ...cardCheckoutRows,
       ...directPaymentRows(),
+      ...proofRows,
       [{ label: letMeInLabelForDoor(door), callbackData: `DEJA_LET_ME_IN_${door}` }],
       ...(door === "girlfriend" ? [[{ label: "What Happens Next", callbackData: "DEJA_GFE_NEXT" }]] : []),
       [
@@ -815,19 +811,21 @@ function paidHomeKeyboard(user: UserRecord | undefined): InlineKeyboard {
 
 function unpaidDejaAlwaysKeyboard(): InlineKeyboard {
   return keyboardFromRows([
+    [{ label: "Start Here: 10 Messages - $15", callbackData: "DEJA_FIRST_KEY" }],
     [
-      { label: "First Private Key", callbackData: "DEJA_FIRST_KEY" },
+      { label: "Voice Notes", callbackData: "VOICE_NOTES" },
+      { label: "Gallery", callbackData: "GALLERY" }
+    ],
+    [{ label: "A More Intimate Look", callbackData: "DEJA_INTIMATE" }],
+    [
+      { label: "Top Up Messages", callbackData: "DEJA_ALWAYS_TOPUP" },
       { label: "This Week’s Door", callbackData: "DEJA_WEEKLY_RHYTHM" }
     ],
     [
-      { label: "Top Up Messages", callbackData: "DEJA_ALWAYS_TOPUP" },
-      { label: "Girlfriend Access", callbackData: "DEJA_ALWAYS_ACCESS_girlfriend" }
+      { label: "Girlfriend Access", callbackData: "DEJA_ALWAYS_ACCESS_girlfriend" },
+      { label: "Goddess Access", callbackData: "DEJA_ALWAYS_ACCESS_goddess" }
     ],
-    [
-      { label: "Goddess Access", callbackData: "DEJA_ALWAYS_ACCESS_goddess" },
-      { label: "VIP Deja", callbackData: "DEJA_ALWAYS_ACCESS_vip" }
-    ],
-    [{ label: "A More Intimate Look", callbackData: "DEJA_INTIMATE" }],
+    [{ label: "VIP Deja", callbackData: "DEJA_ALWAYS_ACCESS_vip" }],
     [
       { label: "Manual Payment Options", callbackData: "STRIPE_DOORS" },
       { label: "What Do I Get?", callbackData: "DEJA_ALWAYS_GET" }
@@ -931,10 +929,9 @@ export async function sendDejaAlways(ctx: Context): Promise<void> {
       "",
       "Unlocking gives you a softer place to come back to: private prompts, mood doors, voice notes, pretty glimpses, Deja Always chat, reups, and access that feels more personal than a link list.",
       "",
-      "If you want the cleanest first step, start with the First Private Key. It is small, instant, and enough to feel whether you want to stay closer.",
+      "If you want the cleanest first step, tap Start Here: 10 Messages - $15. It is the smallest instant key, and it gives you a real reason to try the conversation.",
       "",
       "Telegram Stars unlock instantly inside the bot.",
-      "Card checkout opens only after the payment processor confirms it.",
       "CashApp / PayPal / Venmo are manual review only and do not open access automatically.",
       memoryLines.length ? `\n${memoryLines.join("\n")}` : undefined,
       "",
@@ -1046,7 +1043,7 @@ async function sendKeepChatting(ctx: Context): Promise<void> {
     await logEvent("locked_door_viewed", { userId: ctx.from.id, door: "chat", reason: "no_access" });
   }
   await ctx.reply(
-	    "This door is still locked, pretty thing.\n\nThe cleanest first key is 10 messages. Unlock with Stars, use card checkout when it is offered, or request manual review if you used CashApp, PayPal, or Venmo.",
+    "This door is still locked, pretty thing.\n\nThe cleanest first key is 10 messages. Unlock with Stars, or request manual review if you used CashApp, PayPal, or Venmo.",
     { reply_markup: lockedChatKeyboard() }
   );
 }
@@ -1123,7 +1120,7 @@ async function sendWeeklyRhythm(ctx: Context): Promise<void> {
       "",
       hasChatAccess(user)
         ? "Your key is active, so start wherever the mood pulls you."
-        : "If you want the cleanest first step, start with the First Private Key."
+        : "If you want the cleanest first step, start with 10 messages."
     ].join("\n"),
     {
       reply_markup: keyboardFromRows([
@@ -1359,7 +1356,7 @@ export async function handleDejaAlwaysText(ctx: Context): Promise<boolean> {
     await logEvent("user_ran_out_of_credits", { userId: ctx.from.id, source: "text" });
     await logEvent("locked_door_viewed", { userId: ctx.from.id, door: "chat", reason: "text_without_access" });
     await ctx.reply(
-      "This door is still locked, pretty thing.\n\nThe cleanest first key is 10 messages. Unlock with Stars, use card checkout when it is offered, or request manual review if you used CashApp, PayPal, or Venmo.",
+      "This door is still locked, pretty thing.\n\nThe cleanest first key is 10 messages. Unlock with Stars, or request manual review if you used CashApp, PayPal, or Venmo.",
       { reply_markup: lockedChatKeyboard() }
     );
     return true;
@@ -1670,7 +1667,7 @@ export function registerDejaAlwaysHandlers(bot: Bot): void {
   bot.callbackQuery("DEJA_GFE_NEXT", async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.reply(
-      "What Happens Next\n\nChoose weekly or monthly, handle the payment door, then come back and tap “I Paid, Let Me In.”\n\nIf you use Stars or card checkout, the key opens after the payment processor confirms it. If you use CashApp, PayPal, or Venmo, send proof for manual review.",
+      "What Happens Next\n\nChoose weekly or monthly, then pick the payment path that fits.\n\nStars is the instant in-bot path. If you use CashApp, PayPal, or Venmo, send proof for manual review so I know exactly what to open.",
       {
         reply_markup: keyboardFromRows([
           [
