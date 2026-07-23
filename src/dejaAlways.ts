@@ -668,6 +668,10 @@ async function sendUnlockedTopUpMenu(ctx: Context): Promise<void> {
     {
       reply_markup: keyboardFromRows([
         [{ label: "Use My Messages", callbackData: "DEJA_ALWAYS_CHAT" }],
+        [
+          { label: "Sweet Talk", callbackData: "DEJA_CHAT_sweet" },
+          { label: "Goddess Talk", callbackData: "DEJA_CHAT_goddess" }
+        ],
         [{ label: "Add More Messages", callbackData: "DEJA_ALWAYS_TOPUP" }],
         [{ label: "Back to Deja Always", callbackData: "DEJA_ALWAYS" }]
       ])
@@ -789,6 +793,7 @@ function reupRows(user: UserRecord | undefined): Button[][] {
 function paidHomeKeyboard(user: UserRecord | undefined): InlineKeyboard {
   return keyboardFromRows([
     ...reupRows(user),
+    [{ label: "Start Talking", callbackData: "DEJA_ALWAYS_CHAT" }],
     [{ label: "This Week’s Door", callbackData: "DEJA_WEEKLY_RHYTHM" }],
     [
       { label: "Today’s Note From Me", callbackData: "DEJA_TODAYS_NOTE" },
@@ -1217,7 +1222,7 @@ async function sendWhatDoIGet(ctx: Context): Promise<void> {
     {
       reply_markup: keyboardFromRows([
         [
-          { label: "First Private Key", callbackData: "DEJA_FIRST_KEY" },
+          { label: "Start Here: 10 Messages - $15", callbackData: "DEJA_FIRST_KEY" },
           { label: "This Week’s Door", callbackData: "DEJA_WEEKLY_RHYTHM" }
         ],
         [
