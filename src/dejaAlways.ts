@@ -292,6 +292,34 @@ function accessSummary(user: UserRecord | undefined): string {
   return `Access: ${user.currentAccessType}\nCredits: ${user.messageCredits}\nMembership: ${membership}\nPending: ${user.adminApprovalStatus}`;
 }
 
+function displayMood(user: UserRecord | undefined): string {
+  const vibe = user?.conversationVibe;
+  if (vibe === "sweet") return "Sweet Deja";
+  if (vibe === "goddess") return "Goddess Deja";
+  if (vibe === "talk") return "Here to talk";
+  if (vibe === "explore") return "Exploring";
+  if (vibe === "private") return "Private access";
+  if (vibe === "after_hours") return "After Hours";
+  if (vibe === "missed_you") return "Missed me";
+
+  if (user?.mood === "experience") return "Come Closer";
+  if (user?.mood === "divine") return "Serve Deja";
+  if (user?.mood === "balanced") return "Stay Polished";
+  return "not chosen yet";
+}
+
+function displayAccess(user: UserRecord | undefined): string {
+  if (hasActiveMembership(user)) return keyName(user);
+  if ((user?.messageCredits ?? 0) > 0) return "Message credits only";
+  if (user?.currentAccessType && user.currentAccessType !== "none") return `${user.currentAccessType} key inactive`;
+  return "No active key yet";
+}
+
+function displayExpiration(user: UserRecord | undefined): string {
+  if (!hasActiveMembership(user)) return "No active key";
+  return formatDate(user?.membershipExpiresAt);
+}
+
 function formatDate(value: string | undefined): string {
   if (!value) return "none";
   const date = new Date(value);
@@ -352,16 +380,15 @@ export async function sendUserStatus(ctx: Context): Promise<void> {
   const user = await getUser(ctx.from.id);
   const lastOffer = getOffer(user?.lastPurchaseOfferId);
   const lastPayment = user?.paymentHistory?.at(-1);
-  const access = hasActiveMembership(user) ? keyName(user) : user?.currentAccessType && user.currentAccessType !== "none" ? user.currentAccessType : "No active key yet";
 
   await ctx.reply(
     [
       "Your Deja World Status",
       "",
-      `Mood: ${user?.conversationVibe ?? user?.mood ?? "not chosen yet"}`,
+      `Mood: ${displayMood(user)}`,
       `Credits: ${user?.messageCredits ?? 0} messages`,
-      `Access: ${access}`,
-      `Expires: ${formatDate(user?.membershipExpiresAt)}`,
+      `Access: ${displayAccess(user)}`,
+      `Expires: ${displayExpiration(user)}`,
       `Last purchase: ${lastPaymentDetail(user, lastOffer)}`,
       `Manual review: ${latestPendingManual(user)}`,
       "",
@@ -980,7 +1007,19 @@ async function sendTodaysNoteFromMe(ctx: Context): Promise<void> {
   const user = await getUser(ctx.from.id);
 
   if (!hasChatAccess(user)) {
-    await sendKeepChatting(ctx);
+    await logEvent("locked_door_viewed", { userId: ctx.from.id, door: "todays_note", reason: "no_access" });
+    await ctx.reply(
+      "Today’s Note From Me\n\nThis little note sits behind the private door.\n\nStart with 10 messages if you want the smallest key, or choose the access that fits how close you’re trying to get.",
+      {
+        reply_markup: keyboardFromRows([
+          [{ label: "Start Here: 10 Messages - $15", callbackData: "DEJA_FIRST_KEY" }],
+          [
+            { label: "Deja Always", callbackData: "DEJA_ALWAYS" },
+            { label: "My Status", callbackData: "DEJA_STATUS" }
+          ]
+        ])
+      }
+    );
     return;
   }
 
