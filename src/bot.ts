@@ -16,6 +16,7 @@ import {
   type Mood
 } from "./storage.js";
 import { sendVoiceCategory, sendVoiceNoteItem, sendVoiceNotes } from "./voiceNotes.js";
+import { sendVideoDropItem, sendVideoDrops } from "./videoDrops.js";
 import { sendTodaysWorship } from "./worship.js";
 import { registerWorldCommands, sendMainMenu } from "./world.js";
 import { registerStripeCheckoutHandlers, startStripeWebhookServer } from "./stripeCheckout.js";
@@ -35,6 +36,10 @@ registerWorldCommands(bot);
 
 bot.command("voice_notes", async (ctx) => {
   await sendVoiceNotes(ctx);
+});
+
+bot.command("videos", async (ctx) => {
+  await sendVideoDrops(ctx);
 });
 
 bot.command("about", async (ctx) => {
@@ -112,6 +117,16 @@ bot.callbackQuery(/^VOICE_CATEGORY_(.+)$/, async (ctx) => {
 bot.callbackQuery(/^VOICE_NOTE_(.+)_(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   await sendVoiceNoteItem(ctx, ctx.match[1], Number(ctx.match[2]));
+});
+
+bot.callbackQuery("VIDEO_DROPS", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await sendVideoDrops(ctx);
+});
+
+bot.callbackQuery(/^VIDEO_DROP_(.+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await sendVideoDropItem(ctx, ctx.match[1]);
 });
 
 bot.callbackQuery(/^LINK_DOORWAY_(.+)$/, async (ctx) => {
@@ -210,6 +225,7 @@ async function main(): Promise<void> {
     { command: "menu", description: "Main Menu" },
     { command: "gallery", description: "Gallery" },
     { command: "voice", description: "Voice Notes" },
+    { command: "videos", description: "Video Drops" },
     { command: "gifts", description: "Gifts & Considerations" },
     { command: "spoil", description: "Spoil Me" },
     { command: "worship", description: "Worship gifts" },

@@ -63,7 +63,7 @@ export const sectionCopy = {
   rules:
     "Rules Before You Get Too Comfortable\n\nBe respectful.\nBe grown.\nBe intentional.\nDo not spam me.\nDo not demand free attention.\nDo not send disrespectful messages.\nDo not assume access.\nCuriosity is cute. Effort is sexier.\n\nThis world is sweeter when you know how to behave.",
   help:
-    "Use the buttons, love. Start with /menu when you want back into my world.\n\nOpen /gallery when you want to look.\nOpen /voice when you want to hear me.\nOpen /spoil when you want to be remembered.\nOpen /worship for bigger gifts.\nOpen /reup when you want to keep the door open.\nOpen /private when you know how to come correct.\nOpen /links when you want the official doors."
+    "Use the buttons, love. Start with /menu when you want back into my world.\n\nOpen /gallery when you want to look.\nOpen /voice when you want to hear me.\nOpen /videos when you want a little motion.\nOpen /spoil when you want to be remembered.\nOpen /worship for bigger gifts.\nOpen /reup when you want to keep the door open.\nOpen /private when you know how to come correct.\nOpen /links when you want the official doors."
 };
 
 export const linkPlaceholders = {

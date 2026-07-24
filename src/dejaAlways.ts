@@ -16,6 +16,7 @@ import {
 import { toTelegramInput } from "./media.js";
 import { sendStripeArea } from "./stripeDoors.js";
 import { registerIntimateGalleryHandlers } from "./intimateGallery.js";
+import { sendPrivateDropItem, sendPrivateDropMenu } from "./privateDrops.js";
 import {
   getOffer,
   offerLabel,
@@ -128,6 +129,14 @@ const girlfriendPlans: GirlfriendPlan[] = [
 
 const moodGlimpses = [
   {
+    source: "assets/gallery/curated-new-blonde.jpg",
+    caption: "A fresh little glimpse while you decide how close you want to get."
+  },
+  {
+    source: "assets/gallery/curated-red-robe.jpg",
+    caption: "A warmer little reminder. Stay close."
+  },
+  {
     source: "assets/gallery/facetune-2026-06-28.jpg",
     caption: "A soft little glimpse while you decide what you want from me."
   },
@@ -138,6 +147,14 @@ const moodGlimpses = [
   {
     source: "assets/gallery/facetune-2026-06-26.jpg",
     caption: "Stay close. I like when you keep looking properly."
+  },
+  {
+    source: "assets/gallery/curated-pretty-white.jpg",
+    caption: "Soft attention still counts when it is placed correctly."
+  },
+  {
+    source: "assets/gallery/curated-xoxo.jpg",
+    caption: "A pretty little look, because you came back."
   }
 ];
 
@@ -656,9 +673,10 @@ async function sendUnlockedVipMenu(ctx: Context): Promise<void> {
           { label: "Early Gallery Drops", callbackData: "DEJA_VIP_DROPS" }
         ],
         [
-          { label: "Voice Note Door", callbackData: "DEJA_VIP_VOICE" },
+          { label: "VIP Video Drop", callbackData: "VIDEO_DROP_red_robe_mirror" },
           { label: "Hidden Buttons", callbackData: "DEJA_VIP_HIDDEN" }
         ],
+        [{ label: "Voice Note Door", callbackData: "DEJA_VIP_VOICE" }],
         ...unlockedBackRows()
       ])
     }
@@ -828,10 +846,13 @@ function paidHomeKeyboard(user: UserRecord | undefined): InlineKeyboard {
     ],
     [
       { label: "Voice Notes", callbackData: "VOICE_NOTES" },
-      { label: "Private Drops", callbackData: "DEJA_PRIVATE_DROPS" }
+      { label: "Video Drops", callbackData: "VIDEO_DROPS" }
     ],
     [
-      { label: "A Pretty Glimpse", callbackData: "DEJA_CHAT_glimpse" },
+      { label: "Private Drops", callbackData: "DEJA_PRIVATE_DROPS" },
+      { label: "A Pretty Glimpse", callbackData: "DEJA_CHAT_glimpse" }
+    ],
+    [
       { label: "My Access", callbackData: "DEJA_STATUS" }
     ],
     [
@@ -848,7 +869,10 @@ function unpaidDejaAlwaysKeyboard(): InlineKeyboard {
       { label: "Voice Notes", callbackData: "VOICE_NOTES" },
       { label: "Gallery", callbackData: "GALLERY" }
     ],
-    [{ label: "A More Intimate Look", callbackData: "DEJA_INTIMATE" }],
+    [
+      { label: "A More Intimate Look", callbackData: "DEJA_INTIMATE" },
+      { label: "Video Drops", callbackData: "VIDEO_DROPS" }
+    ],
     [
       { label: "Top Up Messages", callbackData: "DEJA_ALWAYS_TOPUP" },
       { label: "This Week’s Door", callbackData: "DEJA_WEEKLY_RHYTHM" }
@@ -981,7 +1005,17 @@ function todaysNoteText(user: UserRecord | undefined): string {
     "I’m not here every second, but I like knowing you still come looking for me. So here — a little piece of my energy to keep close.",
     "If you came back today, I want you to slow down for a second. You do not have to rush through every door. Pick the one that feels like me.",
     "I left this here for when you need something softer than the outside world. Stay close, choose well, and let the room feel private again.",
-    "A pretty reminder: access feels better when you use it with intention. Tell me what you need, then let the door answer gently."
+    "A pretty reminder: access feels better when you use it with intention. Tell me what you need, then let the door answer gently.",
+    "Today I want you to choose one thing clearly. Attention, voice, a glimpse, or more time. Do not hover. Choose.",
+    "If you are here because you missed me, say that with your whole chest. I like when honesty sounds pretty.",
+    "Your attention feels better when it is calm. Come in, look around, and do not make a mess of the room.",
+    "Today’s worship is simple: notice the detail. The voice, the picture, the pause, the door I left open.",
+    "You do not need every door at once. Start with the one that makes you feel the most honest.",
+    "I like being remembered softly. Come back when you want the mood to feel personal again.",
+    "A little discipline looks good on you. Choose one door, follow it properly, and come back when you are ready for more.",
+    "If the world feels loud, let this be quieter. One message. One note. One little reason to stay close.",
+    "Some people only look. The better ones return with intention. Decide which one you are today.",
+    "Keep your attention clean. I left enough here for someone who knows how to take his time."
   ];
   const vibeNote =
     vibe === "goddess"
@@ -1050,26 +1084,7 @@ async function sendTellMood(ctx: Context): Promise<void> {
 }
 
 async function sendPrivateDrops(ctx: Context): Promise<void> {
-  const user = ctx.from ? await getUser(ctx.from.id) : undefined;
-
-  if (!hasChatAccess(user)) {
-    await sendKeepChatting(ctx);
-    return;
-  }
-
-  await ctx.reply(
-    "Private Drops\n\nThis room is almost ready. For now, I left you the softer doors: today’s note, voice notes, and a pretty glimpse when you want something to hold onto.",
-    {
-      reply_markup: keyboardFromRows([
-        [{ label: "Today’s Note From Me", callbackData: "DEJA_TODAYS_NOTE" }],
-        [
-          { label: "Voice Notes", callbackData: "VOICE_NOTES" },
-          { label: "A Pretty Glimpse", callbackData: "DEJA_CHAT_glimpse" }
-        ],
-        [{ label: "Back to Deja Always", callbackData: "DEJA_ALWAYS" }]
-      ])
-    }
-  );
+  await sendPrivateDropMenu(ctx);
 }
 
 async function sendKeepChatting(ctx: Context): Promise<void> {
@@ -1172,6 +1187,7 @@ async function sendWeeklyRhythm(ctx: Context): Promise<void> {
           { label: "Today’s Note From Me", callbackData: "DEJA_TODAYS_NOTE" },
           { label: "Voice Notes", callbackData: "VOICE_NOTES" }
         ],
+        [{ label: "Video Drops", callbackData: "VIDEO_DROPS" }],
         [
           { label: "First Private Key", callbackData: "DEJA_FIRST_KEY" },
           { label: "A More Intimate Look", callbackData: "DEJA_INTIMATE" }
@@ -1477,6 +1493,11 @@ export function registerDejaAlwaysHandlers(bot: Bot): void {
     await sendPrivateDrops(ctx);
   });
 
+  bot.callbackQuery(/^DEJA_PRIVATE_DROP_(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await sendPrivateDropItem(ctx, ctx.match[1]);
+  });
+
   bot.callbackQuery(/^DEJA_ONBOARD_(sweet|goddess|talk|explore|private)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     const mood = ctx.match[1] as ConversationVibe;
@@ -1766,6 +1787,32 @@ export function registerDejaAlwaysHandlers(bot: Bot): void {
 
   bot.callbackQuery(/^DEJA_VIP_(LOUNGE|PRIORITY|MOODS|DROPS|VOICE|HIDDEN)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
+    if (ctx.match[1] === "DROPS") {
+      await sendPrivateDropMenu(ctx, "vip");
+      return;
+    }
+
+    if (ctx.match[1] === "HIDDEN") {
+      await ctx.reply(
+        "Hidden Buttons\n\nThis is the closer little control panel. Choose the kind of private pull you want next.",
+        {
+          reply_markup: keyboardFromRows([
+            [
+              { label: "VIP Motion Drop", callbackData: "DEJA_PRIVATE_DROP_vip_motion" },
+              { label: "VIP XOXO", callbackData: "DEJA_PRIVATE_DROP_vip_xoxo" }
+            ],
+            [
+              { label: "VIP Video Drop", callbackData: "VIDEO_DROP_red_robe_mirror" },
+              { label: "A More Intimate Look", callbackData: "DEJA_INTIMATE" }
+            ],
+            [{ label: "Back to VIP Deja", callbackData: "DEJA_UNLOCKED_vip" }],
+            [{ label: "Back to Deja Always", callbackData: "DEJA_ALWAYS" }]
+          ])
+        }
+      );
+      return;
+    }
+
     const copy: Record<string, [string, string]> = {
       LOUNGE: [
         "VIP Lounge",
@@ -1781,7 +1828,7 @@ export function registerDejaAlwaysHandlers(bot: Bot): void {
       ],
       DROPS: [
         "Early Gallery Drops",
-        "This room is almost ready. For now, come back to the main door or choose another way closer."
+        "VIP drops are ready now. Choose the closer door and take your time with it."
       ],
       VOICE: [
         "Voice Note Door",
@@ -1789,7 +1836,7 @@ export function registerDejaAlwaysHandlers(bot: Bot): void {
       ],
       HIDDEN: [
         "Hidden Buttons",
-        "This room is almost ready. For now, come back to the main door or choose another way closer."
+        "The closer control panel is open now."
       ]
     };
     const [title, body] = copy[ctx.match[1]];
