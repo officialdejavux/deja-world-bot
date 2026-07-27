@@ -68,7 +68,8 @@ function formatUserStatus(user: UserRecord | undefined): string {
     ? user.manualPaymentRequests
         .slice(-5)
         .map((request) => {
-          return `${request.requestId}: ${request.selectedType} - ${request.status}${request.note ? ` - ${request.note}` : ""}`;
+          const attachment = request.attachmentType ? ` - ${request.attachmentType} attached` : "";
+          return `${request.requestId}: ${request.selectedType} - ${request.status}${request.note ? ` - ${request.note}` : ""}${attachment}`;
         })
         .join("\n")
     : "Manual requests: none";
@@ -169,7 +170,7 @@ function formatPaymentSummary(payment: PaymentRecord): string {
     return [
       payment.offerId,
       formatUsdCents(payment.amountCents, payment.currency),
-      `Stripe ${shortChargeId(payment.stripeCheckoutSessionId)}`
+      `Legacy card ${shortChargeId(payment.stripeCheckoutSessionId)}`
     ]
       .filter(Boolean)
       .join(" - ");
@@ -199,7 +200,7 @@ function formatPaymentLine(payment: PaymentRecord): string {
     `${payment.createdAt}`,
     `User: ${payment.userId}`,
     `Offer: ${payment.offerId}`,
-    `Provider: ${isStripe ? "Stripe" : isManual ? "Manual review" : "Telegram Stars"}`,
+    `Provider: ${isStripe ? "Legacy card record" : isManual ? "Manual review" : "Telegram Stars"}`,
     isStripe
       ? `Amount: ${formatUsdCents(payment.amountCents, payment.currency) ?? "unknown"}`
       : isManual
@@ -253,9 +254,6 @@ function formatAnalytics(summary: AnalyticsSummary, expiredCleaned: number): str
     "",
     `Successful Stars payments: ${summary.successfulStarsPayments}`,
     `Total Stars collected: ${summary.totalStarsCollected}`,
-    `Successful Stripe payments: ${summary.successfulStripePayments}`,
-    `Stripe revenue tracked: ${formatUsdCents(summary.totalStripeRevenueCents) ?? "$0.00"}`,
-    "",
     "Active access keys:",
     `Girlfriend: ${summary.accessCounts.girlfriend}`,
     `Goddess: ${summary.accessCounts.goddess}`,
@@ -277,10 +275,6 @@ const funnelLabels: Record<string, string> = {
   stars_checkout_opened: "Tapped Stars checkout",
   stars_invoice_sent: "Stars invoice sent",
   stars_payment_success: "Stars payments complete",
-  stripe_checkout_created: "Card checkout created",
-  stripe_checkout_opened: "Tapped card checkout",
-  stripe_payment_success: "Card payments complete",
-  stripe_webhook_received: "Stripe webhooks received",
   manual_payment_door_opened: "Opened manual payment door",
   manual_review_started: "Started manual review",
   manual_payment_type_selected: "Chose manual payment type",
@@ -402,11 +396,17 @@ async function notifyApprovedUser(
   }
 }
 
-async function approveAccessAndNotify(ctx: Context, userId: string, accessType: AccessType): Promise<void> {
+async function approveAccessAndNotify(
+  ctx: Context,
+  userId: string,
+  accessType: AccessType,
+  manualRequestId?: string
+): Promise<void> {
   const offer = approvalOfferDetails(accessType);
   const user = await approveUserAccess(userId, accessType, {
     recordManualPayment: true,
     adminId: ctx.from?.id,
+    ...(manualRequestId ? { manualRequestId } : {}),
     ...(offer.offerId ? { offerId: offer.offerId } : {}),
     ...(offer.label ? { label: offer.label } : {}),
     ...(offer.usdReference ? { usdReference: offer.usdReference } : {}),
@@ -450,20 +450,24 @@ function pendingManualCount(users: UserRecord[]): number {
 export function adminReviewKeyboard(
   telegramId: number | string,
   requestKind: AccessRequestKind,
-  accessType?: AccessType
+  accessType?: AccessType,
+  manualRequestId?: string
 ): InlineKeyboard {
   const userId = String(telegramId);
+  const requestSuffix = manualRequestId ? `_${manualRequestId}` : "";
   const keyboard = new InlineKeyboard();
 
   if (requestKind === "topup") {
-    keyboard.text("Add 10 messages", `ADMIN_CREDITS_${userId}_10`).row();
-    keyboard.text("Add 30 messages", `ADMIN_CREDITS_${userId}_30`).row();
-    keyboard.text("Add 60 messages", `ADMIN_CREDITS_${userId}_60`).row();
+    keyboard.text("Add 10 messages", `ADMIN_CREDITS_${userId}_10${requestSuffix}`).row();
+    keyboard.text("Add 30 messages", `ADMIN_CREDITS_${userId}_30${requestSuffix}`).row();
+    keyboard.text("Add 60 messages", `ADMIN_CREDITS_${userId}_60${requestSuffix}`).row();
   } else if (accessType && accessType !== "none") {
-    keyboard.text(`Approve ${accessLabel(accessType)}`, `ADMIN_APPROVE_${userId}_${accessType}`).row();
+    keyboard
+      .text(`Approve ${accessLabel(accessType)}`, `ADMIN_APPROVE_${userId}_${accessType}${requestSuffix}`)
+      .row();
   }
 
-  keyboard.text("Deny Review", `ADMIN_DENY_${userId}`).row();
+  keyboard.text("Deny Review", `ADMIN_DENY_${userId}${requestSuffix}`).row();
   keyboard.text("Check Status", `ADMIN_STATUS_${userId}`);
   return keyboard;
 }
@@ -836,13 +840,14 @@ export function registerAdminCommands(bot: Bot): void {
         reply_markup: adminReviewKeyboard(
           user.telegramId,
           requestKind,
-          manual ? manualAccessType(manual.selectedType) : request?.accessType
+          manual ? manualAccessType(manual.selectedType) : request?.accessType,
+          manual?.requestId
         )
       });
     }
   });
 
-  bot.callbackQuery(/^ADMIN_APPROVE_(\d+)_(girlfriend|goddess|vip)$/, async (ctx) => {
+  bot.callbackQuery(/^ADMIN_APPROVE_(\d+)_(girlfriend|goddess|vip)(?:_(.+))?$/, async (ctx) => {
     if (!isAdmin(ctx)) {
       await ctx.answerCallbackQuery({ text: "Private.", show_alert: true });
       return;
@@ -850,17 +855,27 @@ export function registerAdminCommands(bot: Bot): void {
 
     const userId = ctx.match[1];
     const accessType = accessTypeFrom(ctx.match[2]);
+    const manualRequestId = ctx.match[3];
 
     if (!accessType || accessType === "none") {
       await ctx.answerCallbackQuery({ text: "That access type is not available.", show_alert: true });
       return;
     }
 
+    if (manualRequestId) {
+      const user = await getUser(userId);
+      const request = user?.manualPaymentRequests?.find((item) => item.requestId === manualRequestId);
+      if (!request || request.status !== "pending" || manualAccessType(request.selectedType) !== accessType) {
+        await ctx.answerCallbackQuery({ text: "This review is no longer pending.", show_alert: true });
+        return;
+      }
+    }
+
     await ctx.answerCallbackQuery({ text: `${accessLabel(accessType)} access approved.` });
-    await approveAccessAndNotify(ctx, userId, accessType);
+    await approveAccessAndNotify(ctx, userId, accessType, manualRequestId);
   });
 
-  bot.callbackQuery(/^ADMIN_CREDITS_(\d+)_(10|30|60)$/, async (ctx) => {
+  bot.callbackQuery(/^ADMIN_CREDITS_(\d+)_(10|30|60)(?:_(.+))?$/, async (ctx) => {
     if (!isAdmin(ctx)) {
       await ctx.answerCallbackQuery({ text: "Private.", show_alert: true });
       return;
@@ -868,7 +883,17 @@ export function registerAdminCommands(bot: Bot): void {
 
     const userId = ctx.match[1];
     const credits = Number(ctx.match[2]);
-    const user = await addUserCredits(userId, credits);
+    const manualRequestId = ctx.match[3];
+    if (manualRequestId) {
+      const currentUser = await getUser(userId);
+      const request = currentUser?.manualPaymentRequests?.find((item) => item.requestId === manualRequestId);
+      if (!request || request.status !== "pending" || request.selectedType !== "message_credits") {
+        await ctx.answerCallbackQuery({ text: "This review is no longer pending.", show_alert: true });
+        return;
+      }
+    }
+
+    const user = await addUserCredits(userId, credits, { ...(manualRequestId ? { manualRequestId } : {}) });
     await logEvent("admin_approved", { userId, adminId: ctx.from.id, credits });
 
     await ctx.answerCallbackQuery({ text: `${credits} messages added.` });
@@ -884,14 +909,24 @@ export function registerAdminCommands(bot: Bot): void {
     }
   });
 
-  bot.callbackQuery(/^ADMIN_DENY_(\d+)$/, async (ctx) => {
+  bot.callbackQuery(/^ADMIN_DENY_(\d+)(?:_(.+))?$/, async (ctx) => {
     if (!isAdmin(ctx)) {
       await ctx.answerCallbackQuery({ text: "Private.", show_alert: true });
       return;
     }
 
     const userId = ctx.match[1];
-    const user = await denyPendingManualRequest(userId);
+    const manualRequestId = ctx.match[2];
+    if (manualRequestId) {
+      const currentUser = await getUser(userId);
+      const request = currentUser?.manualPaymentRequests?.find((item) => item.requestId === manualRequestId);
+      if (!request || request.status !== "pending") {
+        await ctx.answerCallbackQuery({ text: "This review is no longer pending.", show_alert: true });
+        return;
+      }
+    }
+
+    const user = await denyPendingManualRequest(userId, manualRequestId);
     await logEvent("admin_denied", { userId, adminId: ctx.from.id });
     await ctx.answerCallbackQuery({ text: "Manual review denied." });
     await ctx.reply(`Manual review denied.\n\n${formatUserStatus(user)}`);

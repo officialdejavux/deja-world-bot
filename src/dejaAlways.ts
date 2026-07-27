@@ -8,13 +8,12 @@ import {
   logEvent,
   recordStarsPaymentDelivery,
   setUserConversationVibe,
-  setUserMemory,
   type AccessType,
   type ConversationVibe,
   type UserRecord
 } from "./storage.js";
 import { toTelegramInput } from "./media.js";
-import { sendStripeArea } from "./stripeDoors.js";
+import { sendPaymentArea } from "./paymentDoors.js";
 import { registerIntimateGalleryHandlers } from "./intimateGallery.js";
 import { sendPrivateDropItem, sendPrivateDropMenu } from "./privateDrops.js";
 import {
@@ -243,11 +242,6 @@ function manualPaymentTypeForDoor(door: PaidDoorKey): string {
   return door;
 }
 
-function unlockedCallbackForDoor(door: PaidDoorKey): string {
-  if (door === "topup") return "DEJA_TOPUP_UNLOCKED";
-  return `DEJA_UNLOCKED_${door}`;
-}
-
 function letMeInLabelForDoor(door: PaidDoorKey): string {
   if (door === "topup") return "I Paid, Add My Messages";
   return "I Paid, Let Me In";
@@ -386,7 +380,7 @@ function statusKeyboard(user: UserRecord | undefined): InlineKeyboard {
       { label: "See Other Options", callbackData: "DEJA_ALWAYS" }
     ],
     [
-      { label: "Manual Payment Options", callbackData: "STRIPE_DOORS" },
+      { label: "Manual Payment Options", callbackData: "PAYMENT_DOORS" },
       { label: "Need Help", callbackData: "DEJA_PAY_SUPPORT" }
     ]
   ]);
@@ -396,7 +390,6 @@ export async function sendUserStatus(ctx: Context): Promise<void> {
   if (!ctx.from) return;
   const user = await getUser(ctx.from.id);
   const lastOffer = getOffer(user?.lastPurchaseOfferId);
-  const lastPayment = user?.paymentHistory?.at(-1);
 
   await ctx.reply(
     [
@@ -469,16 +462,6 @@ async function notifyAdmins(ctx: Context, user: UserRecord, requestLabel: string
       // Admin notification should never break the user flow.
     }
   }
-}
-
-function productPayload(product: PaymentProduct): string {
-  const offer = productOffer(product);
-  return offer ? offerPayload(offer) : "deja:offer:unknown";
-}
-
-function productTitle(product: PaymentProduct): string {
-  const offer = productOffer(product);
-  return offer ? offerLabel(offer) : "Deja Always";
 }
 
 function productOffer(product: PaymentProduct): ResolvedOffer | undefined {
@@ -883,7 +866,7 @@ function unpaidDejaAlwaysKeyboard(): InlineKeyboard {
     ],
     [{ label: "VIP Deja", callbackData: "DEJA_ALWAYS_ACCESS_vip" }],
     [
-      { label: "Manual Payment Options", callbackData: "STRIPE_DOORS" },
+      { label: "Manual Payment Options", callbackData: "PAYMENT_DOORS" },
       { label: "What Do I Get?", callbackData: "DEJA_ALWAYS_GET" }
     ],
     [{ label: "Main Menu", callbackData: "MENU" }]
@@ -1576,7 +1559,7 @@ export function registerDejaAlwaysHandlers(bot: Bot): void {
         ])
       }
     );
-    await sendStripeArea(ctx, "entry");
+    await sendPaymentArea(ctx, "entry");
   });
 
   bot.callbackQuery("DEJA_ALWAYS_CHAT", async (ctx) => {

@@ -2,13 +2,11 @@ import { InlineKeyboard, type Bot, type Context } from "grammy";
 import { registerDejaAlwaysHandlers, sendOnboardingMood } from "./dejaAlways.js";
 import { futureReupOptions, futureSpoilOptions, futureWorshipOptions } from "./editLater.js";
 import { sendGallery } from "./gallery.js";
-import { sendLinks } from "./links.js";
-import { registerStripeDoorHandlers, sendStripeArea } from "./stripeDoors.js";
-import { getLinks, getUser, logEvent, setUserMemory, type LinkRecord } from "./storage.js";
+import { registerPaymentDoorHandlers, sendPaymentArea } from "./paymentDoors.js";
+import { getLinks, getUser, logEvent, setUserAgeConfirmed, setUserMemory, type LinkRecord } from "./storage.js";
 import { sendVoiceNotes } from "./voiceNotes.js";
 import { sendTodaysWorship } from "./worship.js";
 import {
-  brandName,
   defaultReupOptions,
   defaultSpoilOptions,
   defaultWorshipOptions,
@@ -198,6 +196,15 @@ export async function sendMainMenu(ctx: Context): Promise<void> {
   });
 }
 
+export async function sendAgeGate(ctx: Context): Promise<void> {
+  await ctx.reply(sectionCopy.start, {
+    reply_markup: keyboardFromRows([
+      [{ label: "I am 18+ — Let me in", callbackData: "WORLD_AGE_YES" }],
+      [{ label: "Not for me", callbackData: "WORLD_AGE_NO" }]
+    ])
+  });
+}
+
 async function sendSoftRoom(ctx: Context): Promise<void> {
   await ctx.reply(sectionCopy.softRoom, {
     reply_markup: keyboardFromRows([
@@ -260,7 +267,7 @@ async function sendGifts(ctx: Context): Promise<void> {
     ])
   });
 
-  await sendStripeArea(
+  await sendPaymentArea(
     ctx,
     "spoil",
     "Support my world in whatever way feels natural. Every door is different, but the intention is always felt."
@@ -305,7 +312,7 @@ async function sendReups(ctx: Context): Promise<void> {
     ])
   });
 
-  await sendStripeArea(ctx, "keep_messaging");
+  await sendPaymentArea(ctx, "keep_messaging");
 }
 
 async function sendPrivateAccess(ctx: Context): Promise<void> {
@@ -324,7 +331,7 @@ async function sendPrivateAccess(ctx: Context): Promise<void> {
     ])
   });
 
-  await sendStripeArea(ctx, "private");
+  await sendPaymentArea(ctx, "private");
 }
 
 async function sendOfficialLinks(ctx: Context): Promise<void> {
@@ -357,18 +364,13 @@ async function sendRules(ctx: Context): Promise<void> {
 
 export function registerWorldCommands(bot: Bot): void {
   registerDejaAlwaysHandlers(bot);
-  registerStripeDoorHandlers(bot);
+  registerPaymentDoorHandlers(bot);
 
   // This file owns the main entry flow:
   // /start -> 18+ age gate -> mood choice -> Deja Always/private world -> main menu.
   bot.command("start", async (ctx) => {
     await logEvent("start", { userId: ctx.from?.id });
-    await ctx.reply(sectionCopy.start, {
-      reply_markup: keyboardFromRows([
-        [{ label: "I am 18+ — Let me in", callbackData: "WORLD_AGE_YES" }],
-        [{ label: "Not for me", callbackData: "WORLD_AGE_NO" }]
-      ])
-    });
+    await sendAgeGate(ctx);
   });
 
   bot.command("menu", async (ctx) => {
@@ -419,12 +421,14 @@ export function registerWorldCommands(bot: Bot): void {
 
   bot.callbackQuery("WORLD_AGE_YES", async (ctx) => {
     await ctx.answerCallbackQuery();
+    await setUserAgeConfirmed(ctx.from.id, true);
     await logEvent("age_confirmed", { userId: ctx.from.id });
     await sendOnboardingMood(ctx);
   });
 
   bot.callbackQuery("WORLD_AGE_NO", async (ctx) => {
     await ctx.answerCallbackQuery();
+    await setUserAgeConfirmed(ctx.from.id, false);
     await logEvent("age_declined", { userId: ctx.from.id });
     await ctx.reply(sectionCopy.notForMe);
   });

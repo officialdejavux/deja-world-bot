@@ -24,8 +24,8 @@ Scope: source/configuration audit only. No bot source code was changed.
 - Instant in-bot payments use Telegram Stars.
 - Stars invoices are created with `ctx.replyWithInvoice(...)` in `src/dejaAlways.ts`.
 - Telegram Stars currency is `XTR`.
-- Direct/manual payment links use CashApp, PayPal, and Venmo in `src/stripeDoors.ts`, `src/world.ts`, and `src/dejaAlways.ts`.
-- Despite the legacy filename `src/stripeDoors.ts`, I did not find an active Stripe API, Stripe webhook, Stripe checkout link, or Stripe SDK in the bot code.
+- Direct/manual payment links use CashApp, PayPal, and Venmo in `src/paymentDoors.ts`, `src/world.ts`, and `src/dejaAlways.ts`.
+- Automatic checkout uses Telegram Stars. Card checkout, card webhooks, and the card SDK are intentionally absent.
 - The intimate gallery uses Telegram paid media through `ctx.replyWithPaidMedia(...)` in `src/intimateGallery.ts`.
 
 ### Database/storage used
@@ -82,7 +82,7 @@ In grammY, the first matching handler normally handles the update unless it call
 | Mood choice: goddess | `Careful... That door is for the ones who like beauty with power behind it...` | `Enter The Goddess Room`, `Spoil Me Properly`, `Main Menu` | `DEJA_ONBOARD_goddess` | `src/dejaAlways.ts` | `setUserConversationVibe(..., "goddess")` |
 | Mood choice: talk | `Then talk to me... Tell me what you came here looking for...` | `Keep Chatting With Deja`, `Deja Always`, `Main Menu` | `DEJA_ONBOARD_talk` | `src/dejaAlways.ts` | `setUserConversationVibe(..., "talk")` |
 | Mood choice: explore | `Good choice... There are a few sides of me in here...` | `Open Full Menu`, `Gallery`, `Voice Notes`, `After Hours` | `DEJA_ONBOARD_explore` | `src/dejaAlways.ts` | `setUserConversationVibe(..., "explore")` |
-| Mood choice: private | `Private access is for serious curiosity...` | `Private Access`, `Gifts & Considerations`, `Main Menu`; then direct payment area | `DEJA_ONBOARD_private` | `src/dejaAlways.ts`, then `sendStripeArea(ctx, "entry")` | `setUserConversationVibe(..., "private")` |
+| Mood choice: private | `Private access is for serious curiosity...` | `Private Access`, `Gifts & Considerations`, `Main Menu`; then direct payment area | `DEJA_ONBOARD_private` | `src/dejaAlways.ts`, then `sendPaymentArea(ctx, "entry")` | `setUserConversationVibe(..., "private")` |
 | Main menu | `You’re inside. Pick a doorway...` | `The Soft Room`, `The Goddess Room`, `After Hours`, `Gallery`, `Voice Notes`, `Spoil Me 💎`, `Worship 👑`, `Reups ⚡`, `Deja Always`, `Private Access`, `Official Links`, `Rules` | `WORLD_*`, `GALLERY`, `VOICE_NOTES`, `DEJA_ALWAYS` | `sendMainMenu()` in `src/world.ts` | No direct data change |
 | Soft Room | `The Soft Room is where I let you feel close to me...` | `Sweet Deja`, `Romantic Mood`, `Come Closer`, `Back to Menu` | `WORLD_SOFT_*` | `sendSoftRoom()` in `src/world.ts` | `setUserMemory(..., { lastRoomVisited: "The Soft Room" })` |
 | Goddess Room | `The Goddess Room is for the ones who already know...` | `Worship Energy`, `Spoil Me Properly`, `Rules of Attention`, `Back to Menu` | `WORLD_GODDESS_*` | `sendGoddessRoom()` in `src/world.ts` | `setUserMemory(..., { lastRoomVisited: "The Goddess Room" })` |
@@ -90,9 +90,9 @@ In grammY, the first matching handler normally handles the update unless it call
 | Public gallery | `Look Again... A glimpse is enough when it is placed correctly.` | Gallery category buttons plus `Back to Menu` | `GALLERY_CATEGORY_*`, `GALLERY_ITEM_*` | `src/gallery.ts` | Saves `lastGalleryCategory` and `lastRoomVisited: "Gallery"` |
 | Voice notes | `Some things feel better when you hear them from me...` | Voice note category buttons plus `Back to Menu` | `VOICE_CATEGORY_*`, `VOICE_NOTE_*` | `src/voiceNotes.ts` | Saves `lastVoiceNoteCategory` and `lastRoomVisited: "Voice Notes"` |
 | Empty voice category | `This voice note is still being prepared...` | `Back to Voice Notes`, `Gifts & Considerations`, `Private Access`, `Main Menu` | Various | `sendVoiceCategory()` in `src/voiceNotes.ts` | Saves category memory |
-| Spoil Me | `Spoil Me... Choose the kind of pretty gesture...` | Gift option buttons, `Private Access`, `Official Links`, `Back to Menu`; then direct payment door prompt | `WORLD_SPOIL_*`, `STRIPE_CONFIRM_*` | `sendGifts()` in `src/world.ts`, `sendStripeArea()` in `src/stripeDoors.ts` | Saves `lastRoomVisited: "Spoil Me"` |
+| Spoil Me | `Spoil Me... Choose the kind of pretty gesture...` | Gift option buttons, `Private Access`, `Official Links`, `Back to Menu`; then direct payment door prompt | `WORLD_SPOIL_*`, `PAYMENT_CONFIRM_*` | `sendGifts()` in `src/world.ts`, `sendPaymentArea()` in `src/paymentDoors.ts` | Saves `lastRoomVisited: "Spoil Me"` |
 | Worship | `Worship... This door is for bigger gestures...` | `$100`, `$250`, `$500`, `$1000`, `Custom Offering`, `Today’s Worship`, `Reups`, `Spoil Me`, `Back to Menu` | `WORLD_WORSHIP_GIFT_*` | `sendWorshipDoorway()` in `src/world.ts` | Saves `lastRoomVisited: "Worship"` |
-| Reups | `Reups... Add to the experience...` | Reup option buttons, `Worship`, `Spoil Me`, `Back to Menu`; then direct payment area | `WORLD_REUP_*`, `STRIPE_CONFIRM_*` | `sendReups()` in `src/world.ts` | Saves `lastRoomVisited: "Reups"` |
+| Reups | `Reups... Add to the experience...` | Reup option buttons, `Worship`, `Spoil Me`, `Back to Menu`; then direct payment area | `WORLD_REUP_*`, `PAYMENT_CONFIRM_*` | `sendReups()` in `src/world.ts` | Saves `lastRoomVisited: "Reups"` |
 | Deja Always | `Deja Always... For the ones who do not just want to visit my world once...` plus memory lines if present | `Keep Chatting`, `Top Up Messages`, `Girlfriend Access`, `Goddess Access`, `VIP Deja`, `What Do I Get?`, `A More Intimate Look`, `My Access / My Status`, `Choose Your Door`, `Back to Menu` | `DEJA_ALWAYS_*` | `sendDejaAlways()` in `src/dejaAlways.ts` | Reads user memory and access |
 | Unpaid user taps Keep Chatting | `This door is still locked, pretty thing... Unlock it with Stars for instant access, or request manual review...` | `Top Up Messages`, `Girlfriend Access`, `Goddess Access`, `Request Manual Review`, `Back to Deja Always` | `DEJA_ALWAYS_CHAT` | `sendKeepChatting()` in `src/dejaAlways.ts` | No access change |
 | Paid user taps Keep Chatting | `Your key is active. Come in...` | `Sweet Talk`, `Goddess Talk`, `After Hours Mood`, `I Missed You`, `Send Me a Pretty Glimpse`, `Back to Deja Always` | `DEJA_CHAT_*` | `sendKeepChatting()` in `src/dejaAlways.ts` | No change until user chooses prompt or sends text |
@@ -109,8 +109,8 @@ In grammY, the first matching handler normally handles the update unless it call
 | Successful girlfriend/goddess/VIP payment | `Payment confirmed. Your key is active now...` then unlocked menu | Unlocked membership menu | `message:successful_payment` | `applySuccessfulPayment()` | Sets `currentAccessType`, `membershipStatus: approved`, `membershipExpiresAt`, payment history |
 | Intimate gallery door | `You’re choosing: A More Intimate Look... By continuing, you confirm that you are 18 or older...` | `I am 18+ — Unlock the Gallery`, `Back to Deja Always` | `DEJA_INTIMATE_UNLOCK` | `src/intimateGallery.ts` | No local user/payment record |
 | Intimate gallery unlock | Sends Telegram paid media album | Telegram paid media unlock UI | `replyWithPaidMedia` | `sendIntimatePaidMedia()` in `src/intimateGallery.ts` | No local user/payment record |
-| Manual payment start | `Manual payments are reviewed. They do not unlock automatically...` | `Message Credits`, `Girlfriend Access`, `Goddess Access`, `VIP Access`, `Private Access`, `Other`, `Cancel` | `MANUAL_PAYMENT_TYPE_*` | `src/stripeDoors.ts` | Temporary in-memory draft only |
-| Manual proof submitted | `I have your manual payment request... waiting for review...` | `Payment Support`, `Deja Always`, `Main Menu` | text/photo/document while draft exists | `src/stripeDoors.ts` | Creates `manualPaymentRequests[]`, sets `adminApprovalStatus: pending` |
+| Manual payment start | `Manual payments are reviewed. They do not unlock automatically...` | `Message Credits`, `Girlfriend Access`, `Goddess Access`, `VIP Access`, `Private Access`, `Other`, `Cancel` | `MANUAL_PAYMENT_TYPE_*` | `src/paymentDoors.ts` | Temporary in-memory draft only |
+| Manual proof submitted | `I have your manual payment request... waiting for review...` | `Payment Support`, `Deja Always`, `Main Menu` | text/photo/document while draft exists | `src/paymentDoors.ts` | Creates `manualPaymentRequests[]`, sets `adminApprovalStatus: pending`, and forwards proof to admins |
 | Returning paid user | `Deja Always...` plus lines like `Last door: ...`, `Your mood is still set: ...`, `Last reup: ...`, `Your [key] is active.` | Deja Always keyboard, plus reup same package if available | `DEJA_ALWAYS` | `sendDejaAlways()` | Reads memory/access |
 | Expired paid user | Locked flows appear because `hasActiveMembership()` returns false after `membershipExpiresAt` | Locked/access buttons | `DEJA_ALWAYS_CHAT`, status view | `src/storage.ts`, `src/dejaAlways.ts` | Membership is not automatically marked `expired`; it just fails the active check |
 | Payment support | `Payment Support... For Telegram Stars purchases... For direct payments...` | `I Sent a Manual Payment`, `My Access / My Status`, `Back to Deja Always` | `/paysupport`, `DEJA_PAY_SUPPORT` | `sendPaymentSupport()` in `src/dejaAlways.ts` | Reads user/access |
@@ -399,7 +399,7 @@ The links screen also says:
 
 ### Paid terms disclosure
 
-There is a `/terms` command in `src/stripeDoors.ts`.
+There is a `/terms` command in `src/paymentDoors.ts`.
 
 Current terms text says:
 
@@ -574,7 +574,7 @@ Names only. No secret values included.
 - `src/offers.ts`: single offer registry for Stars prices, reference prices, credits, access types, durations, payloads.
 - `src/dejaAlways.ts`: Telegram Stars invoice creation, pre-checkout validation, successful payment handling, access delivery.
 - `src/intimateGallery.ts`: Telegram paid media for intimate gallery.
-- `src/stripeDoors.ts`: legacy-named direct payment/manual review doors using CashApp, PayPal, Venmo. No active Stripe processor.
+- `src/paymentDoors.ts`: direct payment/manual review doors using CashApp, PayPal, and Venmo.
 
 ### Database/storage
 
@@ -626,7 +626,7 @@ Names only. No secret values included.
 ### What feels confusing
 
 - Duplicate `/start` and `/menu` handlers make the real entry flow harder to reason about.
-- `src/stripeDoors.ts` is a misleading filename now that the bot intentionally does not use Stripe.
+- Card checkout is intentionally absent; Telegram Stars is the only automatic checkout path.
 - `goddess_access`, `vip_deja`, and `girlfriend_access` can look available in the UI but may not have Stars prices unless env vars are set.
 - The older room system in `src/rooms.ts` and the newer world menu in `src/world.ts` coexist, which can feel like two menu systems.
 - Some direct payment door names are abstract, so users may not immediately know what they are buying.
@@ -739,4 +739,3 @@ Track these in JSON or an events file:
 3. Paid offer configuration audit.
 4. Explicit automation disclosure.
 5. Manual request lifecycle: pending, approved, denied, resolved.
-

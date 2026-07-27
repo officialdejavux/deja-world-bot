@@ -1,3 +1,4 @@
+import { randomBytes, randomUUID } from "node:crypto";
 import { appendFile, copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
@@ -9,6 +10,7 @@ export type AdminApprovalStatus = "none" | "pending" | "approved" | "denied" | "
 export type AccessRequestKind = "topup" | "membership";
 export type ManualPaymentStatus = "pending" | "approved" | "denied";
 export type ManualPaymentType = "message_credits" | "girlfriend" | "goddess" | "vip" | "private" | "other";
+export type ManualPaymentAttachmentType = "photo" | "document";
 export type PrivateDropTier = AccessType | "all_paid" | "credits";
 
 export type AnalyticsSummary = {
@@ -24,8 +26,6 @@ export type AnalyticsSummary = {
   deniedManualRequests: number;
   successfulStarsPayments: number;
   totalStarsCollected: number;
-  successfulStripePayments: number;
-  totalStripeRevenueCents: number;
   accessCounts: Record<AccessType, number>;
   membershipStatusCounts: Record<MembershipStatus, number>;
   topOffers: Array<{ offerId: string; count: number; stars: number }>;
@@ -37,6 +37,7 @@ export type FunnelSummary = {
   total: Record<string, number>;
 };
 
+// "stripe" is retained only so historical records remain readable after card checkout removal.
 export type PaymentProvider = "telegram_stars" | "stripe" | "manual";
 
 export type PaymentRecord = {
@@ -68,6 +69,7 @@ export type ManualPaymentRequest = {
   selectedType: ManualPaymentType;
   note?: string;
   attachmentFileId?: string;
+  attachmentType?: ManualPaymentAttachmentType;
   createdAt: string;
   status: ManualPaymentStatus;
 };
@@ -86,6 +88,7 @@ export type UserRecord = {
   telegramId: string;
   username?: string;
   firstName?: string;
+  ageConfirmedAt?: string;
   mood: Mood;
   conversationVibe?: ConversationVibe;
   lastRoomVisited?: string;
@@ -143,6 +146,10 @@ export type BotEventName =
   | "room_opened"
   | "gallery_opened"
   | "voice_notes_opened"
+  | "video_drops_opened"
+  | "video_drop_opened"
+  | "private_drops_opened"
+  | "private_drop_opened"
   | "purchase_card_viewed"
   | "first_key_viewed"
   | "weekly_rhythm_opened"
@@ -150,10 +157,6 @@ export type BotEventName =
   | "stars_invoice_sent"
   | "stars_checkout_opened"
   | "stars_payment_success"
-  | "stripe_checkout_created"
-  | "stripe_checkout_opened"
-  | "stripe_payment_success"
-  | "stripe_webhook_received"
   | "manual_review_started"
   | "manual_payment_door_opened"
   | "manual_payment_type_selected"
@@ -294,9 +297,30 @@ async function writeJson<T>(filePath: string, value: T): Promise<void> {
     }
   }
 
-  const tempPath = `${filePath}.tmp`;
+  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   await rename(tempPath, filePath);
+}
+
+let usersMutationQueue: Promise<void> = Promise.resolve();
+
+async function mutateUsers<T>(mutation: (users: UserMap) => T | Promise<T>): Promise<T> {
+  let release: (() => void) | undefined;
+  const previousMutation = usersMutationQueue;
+  usersMutationQueue = new Promise<void>((resolveMutation) => {
+    release = resolveMutation;
+  });
+
+  await previousMutation;
+
+  try {
+    const users = await getUsers();
+    const result = await mutation(users);
+    await writeJson(usersFile, users);
+    return result;
+  } finally {
+    release?.();
+  }
 }
 
 async function readJson<T>(filePath: string, fallback: T): Promise<T> {
@@ -355,9 +379,6 @@ const funnelEvents: BotEventName[] = [
   "stars_checkout_opened",
   "stars_invoice_sent",
   "stars_payment_success",
-  "stripe_checkout_created",
-  "stripe_checkout_opened",
-  "stripe_payment_success",
   "manual_payment_door_opened",
   "manual_review_started",
   "manual_payment_type_selected",
@@ -384,7 +405,7 @@ export async function getFunnelSummary(now = new Date()): Promise<FunnelSummary>
     total: zeroFunnelCounts()
   };
 
-  let raw = "";
+  let raw: string;
   try {
     raw = await readFile(eventsFile, "utf8");
   } catch (error) {
@@ -440,6 +461,7 @@ function normalizeUserRecord(record: UserRecord): UserRecord {
 
 function accessFields(existing: UserRecord | undefined): Pick<
   UserRecord,
+  | "ageConfirmedAt"
   | "conversationVibe"
   | "lastRoomVisited"
   | "lastGalleryCategory"
@@ -457,6 +479,7 @@ function accessFields(existing: UserRecord | undefined): Pick<
   const normalized = existing ? normalizeUserRecord(existing) : undefined;
 
   return {
+    ...(normalized?.ageConfirmedAt ? { ageConfirmedAt: normalized.ageConfirmedAt } : {}),
     ...(normalized?.conversationVibe ? { conversationVibe: normalized.conversationVibe } : {}),
     ...(normalized?.lastRoomVisited ? { lastRoomVisited: normalized.lastRoomVisited } : {}),
     ...(normalized?.lastGalleryCategory ? { lastGalleryCategory: normalized.lastGalleryCategory } : {}),
@@ -489,107 +512,126 @@ export async function getUser(telegramId: number | string): Promise<UserRecord |
   return users[String(telegramId)];
 }
 
-export async function saveUsers(users: UserMap): Promise<void> {
-  await writeJson(usersFile, users);
-}
-
 export async function upsertUser(user: TelegramUser | undefined): Promise<UserRecord | undefined> {
   if (!user) return undefined;
 
-  const users = await getUsers();
-  const telegramId = String(user.id);
-  const now = new Date().toISOString();
-  const existing = users[telegramId];
+  return mutateUsers((users) => {
+    const telegramId = String(user.id);
+    const now = new Date().toISOString();
+    const existing = users[telegramId];
 
-  const record: UserRecord = {
-    telegramId,
-    username: user.username,
-    firstName: user.first_name,
-    mood: existing?.mood ?? "balanced",
-    ...accessFields(existing),
-    stopped: existing?.stopped ?? false,
-    messageCount: (existing?.messageCount ?? 0) + 1,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
+    const record: UserRecord = {
+      telegramId,
+      username: user.username,
+      firstName: user.first_name,
+      mood: existing?.mood ?? "balanced",
+      ...accessFields(existing),
+      stopped: existing?.stopped ?? false,
+      messageCount: (existing?.messageCount ?? 0) + 1,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastSeenAt: now
+    };
 
-  users[telegramId] = record;
-  await saveUsers(users);
-  return record;
+    users[telegramId] = record;
+    return record;
+  });
 }
 
 export async function setUserMood(telegramId: number | string, mood: Mood): Promise<void> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const existing = users[id];
-  const now = new Date().toISOString();
+  await mutateUsers((users) => {
+    const id = String(telegramId);
+    const existing = users[id];
+    const now = new Date().toISOString();
 
-  users[id] = {
-    telegramId: id,
-    ...(existing?.username ? { username: existing.username } : {}),
-    ...(existing?.firstName ? { firstName: existing.firstName } : {}),
-    mood,
-    ...accessFields(existing),
-    stopped: existing?.stopped ?? false,
-    messageCount: existing?.messageCount ?? 0,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
-
-  await saveUsers(users);
+    users[id] = {
+      telegramId: id,
+      ...(existing?.username ? { username: existing.username } : {}),
+      ...(existing?.firstName ? { firstName: existing.firstName } : {}),
+      mood,
+      ...accessFields(existing),
+      stopped: existing?.stopped ?? false,
+      messageCount: existing?.messageCount ?? 0,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastSeenAt: now
+    };
+  });
 }
 
 export async function setUserConversationVibe(telegramId: number | string, conversationVibe: ConversationVibe): Promise<void> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const existing = users[id];
-  const now = new Date().toISOString();
+  await mutateUsers((users) => {
+    const id = String(telegramId);
+    const existing = users[id];
+    const now = new Date().toISOString();
 
-  users[id] = {
-    telegramId: id,
-    ...(existing?.username ? { username: existing.username } : {}),
-    ...(existing?.firstName ? { firstName: existing.firstName } : {}),
-    mood: existing?.mood ?? "balanced",
-    ...accessFields(existing),
-    conversationVibe,
-    stopped: existing?.stopped ?? false,
-    messageCount: existing?.messageCount ?? 0,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
-
-  await saveUsers(users);
+    users[id] = {
+      telegramId: id,
+      ...(existing?.username ? { username: existing.username } : {}),
+      ...(existing?.firstName ? { firstName: existing.firstName } : {}),
+      mood: existing?.mood ?? "balanced",
+      ...accessFields(existing),
+      conversationVibe,
+      stopped: existing?.stopped ?? false,
+      messageCount: existing?.messageCount ?? 0,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastSeenAt: now
+    };
+  });
 }
 
 export async function setUserStopped(telegramId: number | string, stopped: boolean): Promise<void> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const existing = users[id];
-  const now = new Date().toISOString();
+  await mutateUsers((users) => {
+    const id = String(telegramId);
+    const existing = users[id];
+    const now = new Date().toISOString();
 
-  users[id] = {
-    telegramId: id,
-    ...(existing?.username ? { username: existing.username } : {}),
-    ...(existing?.firstName ? { firstName: existing.firstName } : {}),
-    mood: existing?.mood ?? "balanced",
-    ...accessFields(existing),
-    stopped,
-    messageCount: existing?.messageCount ?? 0,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
-
-  await saveUsers(users);
+    users[id] = {
+      telegramId: id,
+      ...(existing?.username ? { username: existing.username } : {}),
+      ...(existing?.firstName ? { firstName: existing.firstName } : {}),
+      mood: existing?.mood ?? "balanced",
+      ...accessFields(existing),
+      stopped,
+      messageCount: existing?.messageCount ?? 0,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastSeenAt: now
+    };
+  });
 }
 
 export async function deleteUser(telegramId: number | string): Promise<void> {
-  const users = await getUsers();
-  delete users[String(telegramId)];
-  await saveUsers(users);
+  await mutateUsers((users) => {
+    delete users[String(telegramId)];
+  });
+}
+
+export function hasConfirmedAdultAge(user: UserRecord | undefined): boolean {
+  return Boolean(user?.ageConfirmedAt);
+}
+
+export async function setUserAgeConfirmed(telegramId: number | string, confirmed: boolean): Promise<UserRecord | undefined> {
+  return mutateUsers((users) => {
+    const id = String(telegramId);
+    const existing = users[id];
+    if (!existing) return undefined;
+
+    const now = new Date().toISOString();
+    users[id] = {
+      ...existing,
+      ...(confirmed ? { ageConfirmedAt: now } : {}),
+      updatedAt: now,
+      lastSeenAt: now
+    };
+
+    if (!confirmed) {
+      delete users[id].ageConfirmedAt;
+    }
+
+    return users[id];
+  });
 }
 
 export async function getStats(): Promise<{ knownUsers: number; activeUsers: number; stoppedUsers: number }> {
@@ -636,29 +678,28 @@ export function hasChatAccess(user: UserRecord | undefined): boolean {
 }
 
 export async function expireStaleMemberships(now = new Date()): Promise<{ expired: number; users: UserRecord[] }> {
-  const users = await getUsers();
-  const expiredUsers: UserRecord[] = [];
-  const nowIso = now.toISOString();
+  const expiredUsers = await mutateUsers((users) => {
+    const expired: UserRecord[] = [];
+    const nowIso = now.toISOString();
 
-  for (const [id, user] of Object.entries(users)) {
-    if (user.membershipStatus !== "approved" || user.currentAccessType === "none" || !membershipIsExpired(user, now)) {
-      continue;
+    for (const [id, user] of Object.entries(users)) {
+      if (user.membershipStatus !== "approved" || user.currentAccessType === "none" || !membershipIsExpired(user, now)) {
+        continue;
+      }
+
+      users[id] = {
+        ...user,
+        membershipStatus: "expired",
+        updatedAt: nowIso
+      };
+      expired.push(users[id]);
     }
 
-    users[id] = {
-      ...user,
-      membershipStatus: "expired",
-      updatedAt: nowIso
-    };
-    expiredUsers.push(users[id]);
-  }
+    return expired;
+  });
 
-  if (expiredUsers.length > 0) {
-    await saveUsers(users);
-
-    for (const user of expiredUsers.slice(0, 100)) {
-      await logEvent("access_expired", { userId: user.telegramId, accessType: user.currentAccessType });
-    }
+  for (const user of expiredUsers.slice(0, 100)) {
+    await logEvent("access_expired", { userId: user.telegramId, accessType: user.currentAccessType });
   }
 
   return { expired: expiredUsers.length, users: expiredUsers };
@@ -751,10 +792,6 @@ export async function getAnalyticsSummary(now = new Date()): Promise<AnalyticsSu
     totalStarsCollected: payments
       .filter((payment) => payment.delivered && !payment.refunded && (payment.provider ?? "telegram_stars") === "telegram_stars")
       .reduce((sum, payment) => sum + (payment.stars ?? 0), 0),
-    successfulStripePayments: payments.filter((payment) => payment.delivered && !payment.refunded && payment.provider === "stripe").length,
-    totalStripeRevenueCents: payments
-      .filter((payment) => payment.delivered && !payment.refunded && payment.provider === "stripe")
-      .reduce((sum, payment) => sum + (payment.amountCents ?? 0), 0),
     accessCounts,
     membershipStatusCounts,
     topOffers: [...offerCounts.entries()]
@@ -765,24 +802,24 @@ export async function getAnalyticsSummary(now = new Date()): Promise<AnalyticsSu
 }
 
 export async function consumeChatCredit(telegramId: number | string): Promise<UserRecord | undefined> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const existing = users[id];
-  if (!existing) return undefined;
+  return mutateUsers((users) => {
+    const id = String(telegramId);
+    const existing = users[id];
+    if (!existing) return undefined;
 
-  if (hasActiveMembership(existing)) return existing;
-  if (existing.messageCredits <= 0) return existing;
+    if (hasActiveMembership(existing)) return existing;
+    if (existing.messageCredits <= 0) return existing;
 
-  const now = new Date().toISOString();
-  users[id] = {
-    ...existing,
-    messageCredits: existing.messageCredits - 1,
-    updatedAt: now,
-    lastSeenAt: now
-  };
+    const now = new Date().toISOString();
+    users[id] = {
+      ...existing,
+      messageCredits: existing.messageCredits - 1,
+      updatedAt: now,
+      lastSeenAt: now
+    };
 
-  await saveUsers(users);
-  return users[id];
+    return users[id];
+  });
 }
 
 function membershipExpiration(days = 30, existingExpiresAt?: string): string {
@@ -790,6 +827,11 @@ function membershipExpiration(days = 30, existingExpiresAt?: string): string {
   const expires = Number.isFinite(existingExpires) && existingExpires > Date.now() ? new Date(existingExpires) : new Date();
   expires.setUTCDate(expires.getUTCDate() + days);
   return expires.toISOString();
+}
+
+function renewalExpirationBase(existing: UserRecord | undefined, accessType: AccessType): string | undefined {
+  if (!existing || existing.currentAccessType !== accessType || !hasActiveMembership(existing)) return undefined;
+  return existing.membershipExpiresAt;
 }
 
 function manualAccessType(selectedType: ManualPaymentType): AccessType | undefined {
@@ -843,6 +885,7 @@ type ManualApprovalOptions = {
   offerId?: string;
   label?: string;
   usdReference?: string;
+  manualRequestId?: string;
   recordManualPayment?: boolean;
 };
 
@@ -863,144 +906,185 @@ export async function approveUserAccess(
   accessType: AccessType,
   options: ManualApprovalOptions = {}
 ): Promise<UserRecord> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const now = new Date().toISOString();
-  const existing = users[id];
-  const offerId = options.offerId ?? accessOfferId(accessType);
-  const pendingManual = latestManualRequestForAccess(existing, accessType, ["pending"]);
-  const matchedManual = pendingManual ?? latestManualRequestForAccess(existing, accessType, ["approved"]);
-  const alreadyRecordedManual = manualRequestWasRecorded(existing, matchedManual?.requestId);
-  const shouldRecordManualPayment = Boolean(options.recordManualPayment && offerId && !alreadyRecordedManual);
-  const expiresAt =
-    accessType === "none"
-      ? undefined
-      : alreadyRecordedManual && existing?.membershipExpiresAt
-        ? existing.membershipExpiresAt
-        : membershipExpiration(options.durationDays ?? 30, existing?.membershipExpiresAt);
-  const paidRequest: AccessRequest | undefined =
-    shouldRecordManualPayment && offerId
-      ? {
-          kind: "membership",
-          optionKey: offerId,
-          label: options.label ?? offerId,
-          ...(options.usdReference ? { price: options.usdReference } : {}),
-          accessType,
-          requestedAt: now,
-          status: "approved"
-        }
-      : existing?.lastTopUpRequest
-        ? { ...existing.lastTopUpRequest, status: "approved" as const }
-        : undefined;
-
-  const manualPayment: PaymentRecord | undefined =
-    shouldRecordManualPayment && offerId
-      ? {
-          userId: id,
-          offerId,
-          provider: "manual",
-          ...(options.usdReference ? { usdReference: options.usdReference } : {}),
-          ...(matchedManual ? { manualRequestId: matchedManual.requestId, manualPaymentType: matchedManual.selectedType } : {}),
-          ...(options.adminId ? { approvedByAdminId: String(options.adminId) } : {}),
-          payload: matchedManual ? `manual:${matchedManual.requestId}` : `manual_admin:${id}:${offerId}:${now}`,
-          createdAt: now,
-          delivered: true,
-          deliveryResult: expiresAt ? `Opened ${accessType} access until ${expiresAt}` : `Opened ${accessType} access`,
-          refunded: false
-        }
+  return mutateUsers((users) => {
+    const id = String(telegramId);
+    const now = new Date().toISOString();
+    const existing = users[id];
+    const offerId = options.offerId ?? accessOfferId(accessType);
+    const targetedManual = options.manualRequestId
+      ? existing?.manualPaymentRequests?.find((request) => request.requestId === options.manualRequestId)
       : undefined;
-  const history = existing?.paymentHistory ?? [];
+    const pendingManual = options.manualRequestId
+      ? targetedManual?.status === "pending" && manualAccessType(targetedManual.selectedType) === accessType
+        ? targetedManual
+        : undefined
+      : latestManualRequestForAccess(existing, accessType, ["pending"]);
+    const matchedManual = options.manualRequestId
+      ? targetedManual && ["pending", "approved"].includes(targetedManual.status) && manualAccessType(targetedManual.selectedType) === accessType
+        ? targetedManual
+        : undefined
+      : pendingManual ?? latestManualRequestForAccess(existing, accessType, ["approved"]);
+    const alreadyRecordedManual = manualRequestWasRecorded(existing, matchedManual?.requestId);
+    const shouldRecordManualPayment = Boolean(options.recordManualPayment && offerId && !alreadyRecordedManual);
+    const expiresAt =
+      accessType === "none"
+        ? undefined
+        : alreadyRecordedManual && existing?.membershipExpiresAt
+          ? existing.membershipExpiresAt
+          : membershipExpiration(options.durationDays ?? 30, existing?.membershipExpiresAt);
+    const paidRequest: AccessRequest | undefined =
+      shouldRecordManualPayment && offerId
+        ? {
+            kind: "membership",
+            optionKey: offerId,
+            label: options.label ?? offerId,
+            ...(options.usdReference ? { price: options.usdReference } : {}),
+            accessType,
+            requestedAt: now,
+            status: "approved"
+          }
+        : existing?.lastTopUpRequest
+          ? { ...existing.lastTopUpRequest, status: "approved" as const }
+          : undefined;
 
-  users[id] = {
-    telegramId: id,
-    ...(existing?.username ? { username: existing.username } : {}),
-    ...(existing?.firstName ? { firstName: existing.firstName } : {}),
-    mood: existing?.mood ?? "balanced",
-    ...accessFields(existing),
-    currentAccessType: accessType,
-    membershipStatus: accessType === "none" ? "none" : "approved",
-    ...(expiresAt ? { membershipExpiresAt: expiresAt } : {}),
-    adminApprovalStatus: "approved",
-    ...(offerId ? { lastPurchaseOfferId: offerId } : {}),
-    ...(paidRequest ? { lastTopUpRequest: paidRequest } : {}),
-    ...(manualPayment ? { paymentHistory: [...history, manualPayment].slice(-75) } : {}),
-    ...markManualRequestApproved(existing, pendingManual?.requestId, !options.recordManualPayment),
-    stopped: existing?.stopped ?? false,
-    messageCount: existing?.messageCount ?? 0,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
+    const manualPayment: PaymentRecord | undefined =
+      shouldRecordManualPayment && offerId
+        ? {
+            userId: id,
+            offerId,
+            provider: "manual",
+            ...(options.usdReference ? { usdReference: options.usdReference } : {}),
+            ...(matchedManual ? { manualRequestId: matchedManual.requestId, manualPaymentType: matchedManual.selectedType } : {}),
+            ...(options.adminId ? { approvedByAdminId: String(options.adminId) } : {}),
+            payload: matchedManual ? `manual:${matchedManual.requestId}` : `manual_admin:${id}:${offerId}:${now}`,
+            createdAt: now,
+            delivered: true,
+            deliveryResult: expiresAt ? `Opened ${accessType} access until ${expiresAt}` : `Opened ${accessType} access`,
+            refunded: false
+          }
+        : undefined;
+    const history = existing?.paymentHistory ?? [];
+    const manualPaymentRequests = markManualRequestApproved(
+      existing,
+      pendingManual?.requestId,
+      !options.recordManualPayment
+    ).manualPaymentRequests ?? [];
 
-  await saveUsers(users);
-  return users[id];
+    users[id] = {
+      telegramId: id,
+      ...(existing?.username ? { username: existing.username } : {}),
+      ...(existing?.firstName ? { firstName: existing.firstName } : {}),
+      mood: existing?.mood ?? "balanced",
+      ...accessFields(existing),
+      currentAccessType: accessType,
+      membershipStatus: accessType === "none" ? "none" : "approved",
+      ...(expiresAt ? { membershipExpiresAt: expiresAt } : {}),
+      adminApprovalStatus: manualPaymentRequests.some((request) => request.status === "pending") ? "pending" : "approved",
+      ...(offerId ? { lastPurchaseOfferId: offerId } : {}),
+      ...(paidRequest ? { lastTopUpRequest: paidRequest } : {}),
+      ...(manualPayment ? { paymentHistory: [...history, manualPayment].slice(-75) } : {}),
+      manualPaymentRequests,
+      stopped: existing?.stopped ?? false,
+      messageCount: existing?.messageCount ?? 0,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastSeenAt: now
+    };
+
+    return users[id];
+  });
 }
 
-export async function addUserCredits(telegramId: number | string, credits: number): Promise<UserRecord> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const now = new Date().toISOString();
-  const existing = users[id];
+export async function addUserCredits(
+  telegramId: number | string,
+  credits: number,
+  options: { manualRequestId?: string } = {}
+): Promise<UserRecord> {
+  return mutateUsers((users) => {
+    const id = String(telegramId);
+    const now = new Date().toISOString();
+    const existing = users[id];
+    const targetedManual = options.manualRequestId
+      ? existing?.manualPaymentRequests?.find((request) => {
+          return (
+            request.requestId === options.manualRequestId &&
+            request.status === "pending" &&
+            request.selectedType === "message_credits"
+          );
+        })
+      : undefined;
+    const manualPaymentRequests = markManualRequestApproved(existing, targetedManual?.requestId).manualPaymentRequests ?? [];
 
-  users[id] = {
-    telegramId: id,
-    ...(existing?.username ? { username: existing.username } : {}),
-    ...(existing?.firstName ? { firstName: existing.firstName } : {}),
-    mood: existing?.mood ?? "balanced",
-    ...accessFields(existing),
-    messageCredits: Math.max(0, (existing?.messageCredits ?? 0) + credits),
-    adminApprovalStatus: "approved",
-    ...(existing?.lastTopUpRequest
-      ? { lastTopUpRequest: { ...existing.lastTopUpRequest, status: "approved" as const } }
-      : {}),
-    ...markPendingManualRequests(existing, "approved"),
-    stopped: existing?.stopped ?? false,
-    messageCount: existing?.messageCount ?? 0,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
+    users[id] = {
+      telegramId: id,
+      ...(existing?.username ? { username: existing.username } : {}),
+      ...(existing?.firstName ? { firstName: existing.firstName } : {}),
+      mood: existing?.mood ?? "balanced",
+      ...accessFields(existing),
+      messageCredits: Math.max(0, (existing?.messageCredits ?? 0) + credits),
+      adminApprovalStatus: manualPaymentRequests.some((request) => request.status === "pending") ? "pending" : "approved",
+      ...(existing?.lastTopUpRequest?.kind === "topup"
+        ? { lastTopUpRequest: { ...existing.lastTopUpRequest, status: "approved" as const } }
+        : {}),
+      manualPaymentRequests,
+      stopped: existing?.stopped ?? false,
+      messageCount: existing?.messageCount ?? 0,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastSeenAt: now
+    };
 
-  await saveUsers(users);
-  return users[id];
+    return users[id];
+  });
 }
 
-export async function denyPendingManualRequest(telegramId: number | string): Promise<UserRecord> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const now = new Date().toISOString();
-  const existing = users[id];
-  const manualPaymentRequests = existing?.manualPaymentRequests ?? [];
-  let deniedOne = false;
+export async function denyPendingManualRequest(
+  telegramId: number | string,
+  manualRequestId?: string
+): Promise<UserRecord> {
+  return mutateUsers((users) => {
+    const id = String(telegramId);
+    const now = new Date().toISOString();
+    const existing = users[id];
+    const manualPaymentRequests = existing?.manualPaymentRequests ?? [];
+    let deniedOne = false;
 
-  const updatedRequests = [...manualPaymentRequests].reverse().map((request) => {
-    if (!deniedOne && request.status === "pending") {
-      deniedOne = true;
-      return { ...request, status: "denied" as const };
-    }
-    return request;
-  }).reverse();
+    const updatedRequests = [...manualPaymentRequests]
+      .reverse()
+      .map((request) => {
+        const matchesTarget = manualRequestId ? request.requestId === manualRequestId : !deniedOne;
+        if (!deniedOne && matchesTarget && request.status === "pending") {
+          deniedOne = true;
+          return { ...request, status: "denied" as const };
+        }
+        return request;
+      })
+      .reverse();
 
-  users[id] = {
-    telegramId: id,
-    ...(existing?.username ? { username: existing.username } : {}),
-    ...(existing?.firstName ? { firstName: existing.firstName } : {}),
-    mood: existing?.mood ?? "balanced",
-    ...accessFields(existing),
-    adminApprovalStatus: "denied",
-    ...(existing?.lastTopUpRequest?.status === "pending"
-      ? { lastTopUpRequest: { ...existing.lastTopUpRequest, status: "denied" as const } }
-      : {}),
-    manualPaymentRequests: updatedRequests,
-    stopped: existing?.stopped ?? false,
-    messageCount: existing?.messageCount ?? 0,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
+    users[id] = {
+      telegramId: id,
+      ...(existing?.username ? { username: existing.username } : {}),
+      ...(existing?.firstName ? { firstName: existing.firstName } : {}),
+      mood: existing?.mood ?? "balanced",
+      ...accessFields(existing),
+      adminApprovalStatus: updatedRequests.some((request) => request.status === "pending")
+        ? "pending"
+        : deniedOne
+          ? "denied"
+          : existing?.adminApprovalStatus ?? "none",
+      ...(existing?.lastTopUpRequest?.status === "pending" && !manualRequestId
+        ? { lastTopUpRequest: { ...existing.lastTopUpRequest, status: "denied" as const } }
+        : {}),
+      manualPaymentRequests: updatedRequests,
+      stopped: existing?.stopped ?? false,
+      messageCount: existing?.messageCount ?? 0,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastSeenAt: now
+    };
 
-  await saveUsers(users);
-  return users[id];
+    return users[id];
+  });
 }
 
 export async function recordPaidCredits(
@@ -1008,69 +1092,69 @@ export async function recordPaidCredits(
   credits: number,
   request: Omit<AccessRequest, "requestedAt" | "status">
 ): Promise<UserRecord> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const now = new Date().toISOString();
-  const existing = users[id];
+  return mutateUsers((users) => {
+    const id = String(telegramId);
+    const now = new Date().toISOString();
+    const existing = users[id];
 
-  const paidRequest: AccessRequest = {
-    ...request,
-    requestedAt: now,
-    status: "approved"
-  };
+    const paidRequest: AccessRequest = {
+      ...request,
+      requestedAt: now,
+      status: "approved"
+    };
 
-  users[id] = {
-    telegramId: id,
-    ...(existing?.username ? { username: existing.username } : {}),
-    ...(existing?.firstName ? { firstName: existing.firstName } : {}),
-    mood: existing?.mood ?? "balanced",
-    ...accessFields(existing),
-    messageCredits: Math.max(0, (existing?.messageCredits ?? 0) + credits),
-    lastTopUpRequest: paidRequest,
-    adminApprovalStatus: "approved",
-    stopped: existing?.stopped ?? false,
-    messageCount: existing?.messageCount ?? 0,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
+    users[id] = {
+      telegramId: id,
+      ...(existing?.username ? { username: existing.username } : {}),
+      ...(existing?.firstName ? { firstName: existing.firstName } : {}),
+      mood: existing?.mood ?? "balanced",
+      ...accessFields(existing),
+      messageCredits: Math.max(0, (existing?.messageCredits ?? 0) + credits),
+      lastTopUpRequest: paidRequest,
+      adminApprovalStatus: "approved",
+      stopped: existing?.stopped ?? false,
+      messageCount: existing?.messageCount ?? 0,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastSeenAt: now
+    };
 
-  await saveUsers(users);
-  return users[id];
+    return users[id];
+  });
 }
 
 export async function recordPendingAccessRequest(
   telegramId: number | string,
   request: Omit<AccessRequest, "requestedAt" | "status">
 ): Promise<UserRecord> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const now = new Date().toISOString();
-  const existing = users[id];
+  return mutateUsers((users) => {
+    const id = String(telegramId);
+    const now = new Date().toISOString();
+    const existing = users[id];
 
-  const pendingRequest: AccessRequest = {
-    ...request,
-    requestedAt: now,
-    status: "pending"
-  };
+    const pendingRequest: AccessRequest = {
+      ...request,
+      requestedAt: now,
+      status: "pending"
+    };
 
-  users[id] = {
-    telegramId: id,
-    ...(existing?.username ? { username: existing.username } : {}),
-    ...(existing?.firstName ? { firstName: existing.firstName } : {}),
-    mood: existing?.mood ?? "balanced",
-    ...accessFields(existing),
-    lastTopUpRequest: pendingRequest,
-    adminApprovalStatus: "pending",
-    stopped: existing?.stopped ?? false,
-    messageCount: existing?.messageCount ?? 0,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
+    users[id] = {
+      telegramId: id,
+      ...(existing?.username ? { username: existing.username } : {}),
+      ...(existing?.firstName ? { firstName: existing.firstName } : {}),
+      mood: existing?.mood ?? "balanced",
+      ...accessFields(existing),
+      lastTopUpRequest: pendingRequest,
+      adminApprovalStatus: "pending",
+      stopped: existing?.stopped ?? false,
+      messageCount: existing?.messageCount ?? 0,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastSeenAt: now
+    };
 
-  await saveUsers(users);
-  return users[id];
+    return users[id];
+  });
 }
 
 export async function recordPaidMembership(
@@ -1079,37 +1163,37 @@ export async function recordPaidMembership(
   days: number,
   request: Omit<AccessRequest, "requestedAt" | "status">
 ): Promise<UserRecord> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const now = new Date().toISOString();
-  const existing = users[id];
+  return mutateUsers((users) => {
+    const id = String(telegramId);
+    const now = new Date().toISOString();
+    const existing = users[id];
 
-  const paidRequest: AccessRequest = {
-    ...request,
-    requestedAt: now,
-    status: "approved"
-  };
+    const paidRequest: AccessRequest = {
+      ...request,
+      requestedAt: now,
+      status: "approved"
+    };
 
-  users[id] = {
-    telegramId: id,
-    ...(existing?.username ? { username: existing.username } : {}),
-    ...(existing?.firstName ? { firstName: existing.firstName } : {}),
-    mood: existing?.mood ?? "balanced",
-    ...accessFields(existing),
-    currentAccessType: accessType,
-    membershipStatus: "approved",
-    membershipExpiresAt: membershipExpiration(days),
-    lastTopUpRequest: paidRequest,
-    adminApprovalStatus: "approved",
-    stopped: existing?.stopped ?? false,
-    messageCount: existing?.messageCount ?? 0,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
+    users[id] = {
+      telegramId: id,
+      ...(existing?.username ? { username: existing.username } : {}),
+      ...(existing?.firstName ? { firstName: existing.firstName } : {}),
+      mood: existing?.mood ?? "balanced",
+      ...accessFields(existing),
+      currentAccessType: accessType,
+      membershipStatus: "approved",
+      membershipExpiresAt: membershipExpiration(days, renewalExpirationBase(existing, accessType)),
+      lastTopUpRequest: paidRequest,
+      adminApprovalStatus: "approved",
+      stopped: existing?.stopped ?? false,
+      messageCount: existing?.messageCount ?? 0,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastSeenAt: now
+    };
 
-  await saveUsers(users);
-  return users[id];
+    return users[id];
+  });
 }
 
 export type StarsPaymentDeliveryInput = {
@@ -1129,243 +1213,164 @@ export async function recordStarsPaymentDelivery(
   telegramId: number | string,
   input: StarsPaymentDeliveryInput
 ): Promise<{ user: UserRecord; payment: PaymentRecord; alreadyProcessed: boolean }> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const now = new Date().toISOString();
-  const existing = users[id];
-  const history = existing?.paymentHistory ?? [];
-  const processed = history.find((payment) => payment.telegramPaymentChargeId === input.telegramPaymentChargeId);
+  return mutateUsers((users) => {
+    const id = String(telegramId);
+    const now = new Date().toISOString();
+    const existing = users[id];
+    const history = existing?.paymentHistory ?? [];
+    const processed = history.find((payment) => payment.telegramPaymentChargeId === input.telegramPaymentChargeId);
 
-  if (processed && existing) {
-    return { user: existing, payment: processed, alreadyProcessed: true };
-  }
+    if (processed && existing) {
+      return { user: existing, payment: processed, alreadyProcessed: true };
+    }
 
-  const paidRequest: AccessRequest = {
-    ...input.request,
-    requestedAt: now,
-    status: "approved"
-  };
+    const paidRequest: AccessRequest = {
+      ...input.request,
+      requestedAt: now,
+      status: "approved"
+    };
 
-  const payment: PaymentRecord = {
-    userId: id,
-    offerId: input.offerId,
-    provider: "telegram_stars",
-    stars: input.stars,
-    ...(input.usdReference ? { usdReference: input.usdReference } : {}),
-    telegramPaymentChargeId: input.telegramPaymentChargeId,
-    ...(input.providerPaymentChargeId ? { providerPaymentChargeId: input.providerPaymentChargeId } : {}),
-    payload: input.payload,
-    createdAt: now,
-    delivered: true,
-    deliveryResult: input.credits
-      ? `Added ${input.credits} message credits`
-      : input.accessType
-        ? `Opened ${input.accessType} access`
-        : "Payment recorded",
-    refunded: false
-  };
+    const payment: PaymentRecord = {
+      userId: id,
+      offerId: input.offerId,
+      provider: "telegram_stars",
+      stars: input.stars,
+      ...(input.usdReference ? { usdReference: input.usdReference } : {}),
+      telegramPaymentChargeId: input.telegramPaymentChargeId,
+      ...(input.providerPaymentChargeId ? { providerPaymentChargeId: input.providerPaymentChargeId } : {}),
+      payload: input.payload,
+      createdAt: now,
+      delivered: true,
+      deliveryResult: input.credits
+        ? `Added ${input.credits} message credits`
+        : input.accessType
+          ? `Opened ${input.accessType} access`
+          : "Payment recorded",
+      refunded: false
+    };
 
-  users[id] = {
-    telegramId: id,
-    ...(existing?.username ? { username: existing.username } : {}),
-    ...(existing?.firstName ? { firstName: existing.firstName } : {}),
-    mood: existing?.mood ?? "balanced",
-    ...accessFields(existing),
-    ...(input.credits ? { messageCredits: Math.max(0, (existing?.messageCredits ?? 0) + input.credits) } : {}),
-    ...(input.accessType
-      ? {
-          currentAccessType: input.accessType,
-          membershipStatus: "approved" as const,
-          membershipExpiresAt: membershipExpiration(input.durationDays ?? 30)
-        }
-      : {}),
-    lastPurchaseOfferId: input.offerId,
-    lastTopUpRequest: paidRequest,
-    adminApprovalStatus: "approved",
-    paymentHistory: [...history, payment].slice(-75),
-    stopped: existing?.stopped ?? false,
-    messageCount: existing?.messageCount ?? 0,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
+    users[id] = {
+      telegramId: id,
+      ...(existing?.username ? { username: existing.username } : {}),
+      ...(existing?.firstName ? { firstName: existing.firstName } : {}),
+      mood: existing?.mood ?? "balanced",
+      ...accessFields(existing),
+      ...(input.credits ? { messageCredits: Math.max(0, (existing?.messageCredits ?? 0) + input.credits) } : {}),
+      ...(input.accessType
+        ? {
+            currentAccessType: input.accessType,
+            membershipStatus: "approved" as const,
+            membershipExpiresAt: membershipExpiration(
+              input.durationDays ?? 30,
+              renewalExpirationBase(existing, input.accessType)
+            )
+          }
+        : {}),
+      lastPurchaseOfferId: input.offerId,
+      lastTopUpRequest: paidRequest,
+      adminApprovalStatus: "approved",
+      paymentHistory: [...history, payment].slice(-75),
+      stopped: existing?.stopped ?? false,
+      messageCount: existing?.messageCount ?? 0,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastSeenAt: now
+    };
 
-  await saveUsers(users);
-  return { user: users[id], payment, alreadyProcessed: false };
-}
-
-export type StripePaymentDeliveryInput = {
-  offerId: string;
-  amountCents: number;
-  currency: string;
-  usdReference?: string;
-  stripeCheckoutSessionId: string;
-  stripePaymentIntentId?: string;
-  payload: string;
-  credits?: number;
-  accessType?: AccessType;
-  durationDays?: number;
-  request: Omit<AccessRequest, "requestedAt" | "status">;
-};
-
-export async function recordStripePaymentDelivery(
-  telegramId: number | string,
-  input: StripePaymentDeliveryInput
-): Promise<{ user: UserRecord; payment: PaymentRecord; alreadyProcessed: boolean }> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const now = new Date().toISOString();
-  const existing = users[id];
-  const history = existing?.paymentHistory ?? [];
-  const processed = history.find((payment) => payment.stripeCheckoutSessionId === input.stripeCheckoutSessionId);
-
-  if (processed && existing) {
-    return { user: existing, payment: processed, alreadyProcessed: true };
-  }
-
-  const paidRequest: AccessRequest = {
-    ...input.request,
-    requestedAt: now,
-    status: "approved"
-  };
-
-  const payment: PaymentRecord = {
-    userId: id,
-    offerId: input.offerId,
-    provider: "stripe",
-    amountCents: input.amountCents,
-    currency: input.currency.toLowerCase(),
-    ...(input.usdReference ? { usdReference: input.usdReference } : {}),
-    stripeCheckoutSessionId: input.stripeCheckoutSessionId,
-    ...(input.stripePaymentIntentId ? { stripePaymentIntentId: input.stripePaymentIntentId } : {}),
-    payload: input.payload,
-    createdAt: now,
-    delivered: true,
-    deliveryResult: input.credits
-      ? `Added ${input.credits} message credits`
-      : input.accessType
-        ? `Opened ${input.accessType} access`
-        : "Payment recorded",
-    refunded: false
-  };
-
-  users[id] = {
-    telegramId: id,
-    ...(existing?.username ? { username: existing.username } : {}),
-    ...(existing?.firstName ? { firstName: existing.firstName } : {}),
-    mood: existing?.mood ?? "balanced",
-    ...accessFields(existing),
-    ...(input.credits ? { messageCredits: Math.max(0, (existing?.messageCredits ?? 0) + input.credits) } : {}),
-    ...(input.accessType
-      ? {
-          currentAccessType: input.accessType,
-          membershipStatus: "approved" as const,
-          membershipExpiresAt: membershipExpiration(input.durationDays ?? 30)
-        }
-      : {}),
-    lastPurchaseOfferId: input.offerId,
-    lastTopUpRequest: paidRequest,
-    adminApprovalStatus: "approved",
-    paymentHistory: [...history, payment].slice(-75),
-    stopped: existing?.stopped ?? false,
-    messageCount: existing?.messageCount ?? 0,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
-
-  await saveUsers(users);
-  return { user: users[id], payment, alreadyProcessed: false };
+    return { user: users[id], payment, alreadyProcessed: false };
+  });
 }
 
 export async function createManualPaymentRequest(
   user: TelegramUser,
   selectedType: ManualPaymentType,
-  details: { note?: string; attachmentFileId?: string }
+  details: { note?: string; attachmentFileId?: string; attachmentType?: ManualPaymentAttachmentType }
 ): Promise<{ user: UserRecord; request: ManualPaymentRequest }> {
-  const users = await getUsers();
-  const id = String(user.id);
-  const now = new Date().toISOString();
-  const existing = users[id];
-  const request: ManualPaymentRequest = {
-    requestId: `manual_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
-    userId: id,
-    ...(user.username ? { username: user.username } : existing?.username ? { username: existing.username } : {}),
-    selectedType,
-    ...(details.note ? { note: details.note } : {}),
-    ...(details.attachmentFileId ? { attachmentFileId: details.attachmentFileId } : {}),
-    createdAt: now,
-    status: "pending"
-  };
+  return mutateUsers((users) => {
+    const id = String(user.id);
+    const now = new Date().toISOString();
+    const existing = users[id];
+    const request: ManualPaymentRequest = {
+      requestId: `m_${Date.now().toString(36)}_${randomBytes(4).toString("hex")}`,
+      userId: id,
+      ...(user.username ? { username: user.username } : existing?.username ? { username: existing.username } : {}),
+      selectedType,
+      ...(details.note ? { note: details.note } : {}),
+      ...(details.attachmentFileId ? { attachmentFileId: details.attachmentFileId } : {}),
+      ...(details.attachmentType ? { attachmentType: details.attachmentType } : {}),
+      createdAt: now,
+      status: "pending"
+    };
 
-  users[id] = {
-    telegramId: id,
-    username: user.username ?? existing?.username,
-    firstName: user.first_name ?? existing?.firstName,
-    mood: existing?.mood ?? "balanced",
-    ...accessFields(existing),
-    adminApprovalStatus: "pending",
-    manualPaymentRequests: [...(existing?.manualPaymentRequests ?? []), request].slice(-25),
-    stopped: existing?.stopped ?? false,
-    messageCount: existing?.messageCount ?? 0,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
+    users[id] = {
+      telegramId: id,
+      username: user.username ?? existing?.username,
+      firstName: user.first_name ?? existing?.firstName,
+      mood: existing?.mood ?? "balanced",
+      ...accessFields(existing),
+      adminApprovalStatus: "pending",
+      manualPaymentRequests: [...(existing?.manualPaymentRequests ?? []), request].slice(-25),
+      stopped: existing?.stopped ?? false,
+      messageCount: existing?.messageCount ?? 0,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastSeenAt: now
+    };
 
-  await saveUsers(users);
-  return { user: users[id], request };
+    return { user: users[id], request };
+  });
 }
 
 export async function setUserMemory(
   telegramId: number | string,
   memory: Partial<Pick<UserRecord, "lastRoomVisited" | "lastGalleryCategory" | "lastVoiceNoteCategory" | "lastPurchaseOfferId">>
 ): Promise<UserRecord | undefined> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const existing = users[id];
-  if (!existing) return undefined;
+  return mutateUsers((users) => {
+    const id = String(telegramId);
+    const existing = users[id];
+    if (!existing) return undefined;
 
-  const now = new Date().toISOString();
-  users[id] = {
-    ...existing,
-    ...memory,
-    updatedAt: now,
-    lastSeenAt: now
-  };
+    const now = new Date().toISOString();
+    users[id] = {
+      ...existing,
+      ...memory,
+      updatedAt: now,
+      lastSeenAt: now
+    };
 
-  await saveUsers(users);
-  return users[id];
+    return users[id];
+  });
 }
 
 export async function removeUserAccess(telegramId: number | string): Promise<UserRecord> {
-  const users = await getUsers();
-  const id = String(telegramId);
-  const now = new Date().toISOString();
-  const existing = users[id];
+  return mutateUsers((users) => {
+    const id = String(telegramId);
+    const now = new Date().toISOString();
+    const existing = users[id];
 
-  users[id] = {
-    telegramId: id,
-    ...(existing?.username ? { username: existing.username } : {}),
-    ...(existing?.firstName ? { firstName: existing.firstName } : {}),
-    mood: existing?.mood ?? "balanced",
-    currentAccessType: "none",
-    messageCredits: 0,
-    membershipStatus: "removed",
-    adminApprovalStatus: "removed",
-    ...(existing?.lastTopUpRequest
-      ? { lastTopUpRequest: { ...existing.lastTopUpRequest, status: "removed" as const } }
-      : {}),
-    ...markPendingManualRequests(existing, "denied"),
-    stopped: existing?.stopped ?? false,
-    messageCount: existing?.messageCount ?? 0,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    lastSeenAt: now
-  };
+    users[id] = {
+      telegramId: id,
+      ...(existing?.username ? { username: existing.username } : {}),
+      ...(existing?.firstName ? { firstName: existing.firstName } : {}),
+      ...(existing?.ageConfirmedAt ? { ageConfirmedAt: existing.ageConfirmedAt } : {}),
+      mood: existing?.mood ?? "balanced",
+      currentAccessType: "none",
+      messageCredits: 0,
+      membershipStatus: "removed",
+      adminApprovalStatus: "removed",
+      ...(existing?.lastTopUpRequest
+        ? { lastTopUpRequest: { ...existing.lastTopUpRequest, status: "removed" as const } }
+        : {}),
+      ...markPendingManualRequests(existing, "denied"),
+      stopped: existing?.stopped ?? false,
+      messageCount: existing?.messageCount ?? 0,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastSeenAt: now
+    };
 
-  await saveUsers(users);
-  return users[id];
+    return users[id];
+  });
 }
 
 export async function getPendingAccessUsers(): Promise<UserRecord[]> {

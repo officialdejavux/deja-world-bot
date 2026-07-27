@@ -1,4 +1,4 @@
-import { Bot } from "grammy";
+import { Bot, type Context } from "grammy";
 import { registerAdminCommands } from "./admin.js";
 import { config } from "./config.js";
 import { handleDejaAlwaysText } from "./dejaAlways.js";
@@ -10,6 +10,7 @@ import {
   deleteUser,
   ensureStorage,
   getUser,
+  hasConfirmedAdultAge,
   setUserMood,
   setUserStopped,
   upsertUser,
@@ -18,16 +19,43 @@ import {
 import { sendVoiceCategory, sendVoiceNoteItem, sendVoiceNotes } from "./voiceNotes.js";
 import { sendVideoDropItem, sendVideoDrops } from "./videoDrops.js";
 import { sendTodaysWorship } from "./worship.js";
-import { registerWorldCommands, sendMainMenu } from "./world.js";
-import { registerStripeCheckoutHandlers, startStripeWebhookServer } from "./stripeCheckout.js";
+import { registerWorldCommands, sendAgeGate, sendMainMenu } from "./world.js";
 
 const bot = new Bot(config.botToken);
+const preAgeCommands = new Set(["start", "about", "privacy", "terms", "myid", "delete_my_data", "stop"]);
+
+function commandName(text: string | undefined): string | undefined {
+  const match = text?.match(/^\/([a-z0-9_]+)(?:@[a-z0-9_]+)?(?:\s|$)/i);
+  return match?.[1]?.toLowerCase();
+}
+
+function canBypassAgeGate(ctx: Context): boolean {
+  const callbackData =
+    ctx.callbackQuery && "data" in ctx.callbackQuery ? ctx.callbackQuery.data : undefined;
+  if (callbackData === "WORLD_AGE_YES" || callbackData === "WORLD_AGE_NO") return true;
+  if (ctx.message && "successful_payment" in ctx.message) return true;
+  return preAgeCommands.has(commandName(ctx.message?.text) ?? "");
+}
 
 bot.use(async (ctx, next) => {
-  if (ctx.from) {
-    await upsertUser(ctx.from);
+  const user = ctx.from ? await upsertUser(ctx.from) : undefined;
+
+  if (!ctx.from || hasConfirmedAdultAge(user) || canBypassAgeGate(ctx)) {
+    await next();
+    return;
   }
-  await next();
+
+  if (ctx.preCheckoutQuery) {
+    await ctx.answerPreCheckoutQuery(false, {
+      error_message: "Confirm that you are 18 or older in the bot before opening a paid door."
+    });
+    return;
+  }
+
+  if (ctx.callbackQuery) {
+    await ctx.answerCallbackQuery({ text: "Confirm 18+ before entering.", show_alert: true });
+  }
+  await sendAgeGate(ctx);
 });
 
 // Main entry commands (/start, /menu, /links, /gallery, /worship, and world navigation)
@@ -72,7 +100,6 @@ bot.command("stop", async (ctx) => {
 });
 
 registerAdminCommands(bot);
-registerStripeCheckoutHandlers(bot);
 
 bot.callbackQuery("CHOOSE_MOOD", async (ctx) => {
   await ctx.answerCallbackQuery();
@@ -218,7 +245,6 @@ bot.catch((error) => {
 
 async function main(): Promise<void> {
   await ensureStorage();
-  startStripeWebhookServer(bot);
 
   const userCommands = [
     { command: "start", description: "Enter Divine Deja" },
