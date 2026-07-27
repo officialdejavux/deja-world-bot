@@ -1,5 +1,5 @@
 import { InlineKeyboard, type Context } from "grammy";
-import { toTelegramInput } from "./media.js";
+import { isMediaSourceAvailable, toTelegramInput } from "./media.js";
 import { getUser, hasActiveMembership, hasChatAccess, logEvent, type AccessType, type UserRecord } from "./storage.js";
 
 type VideoAccess = "any_paid" | AccessType;
@@ -43,6 +43,10 @@ const videoDrops: VideoDrop[] = [
   }
 ];
 
+function availableVideoDrops(): VideoDrop[] {
+  return videoDrops.filter((drop) => isMediaSourceAvailable(drop.source));
+}
+
 function canOpenVideo(user: UserRecord | undefined, access: VideoAccess): boolean {
   if (access === "any_paid") return hasChatAccess(user);
   if (!hasActiveMembership(user)) return false;
@@ -53,7 +57,7 @@ function canOpenVideo(user: UserRecord | undefined, access: VideoAccess): boolea
 function videoMenuKeyboard(user: UserRecord | undefined): InlineKeyboard {
   const keyboard = new InlineKeyboard();
 
-  videoDrops.forEach((drop) => {
+  availableVideoDrops().forEach((drop) => {
     const prefix = canOpenVideo(user, drop.access) ? "" : "Locked: ";
     keyboard.text(`${prefix}${drop.label}`, `VIDEO_DROP_${drop.key}`).row();
   });
@@ -119,6 +123,13 @@ export async function sendVideoDropItem(ctx: Context, key: string): Promise<void
 
   if (!drop) {
     await sendVideoDrops(ctx);
+    return;
+  }
+
+  if (!isMediaSourceAvailable(drop.source)) {
+    await ctx.reply("This video is resting for a moment. Choose another drop while I put it back in place.", {
+      reply_markup: videoMenuKeyboard(user)
+    });
     return;
   }
 

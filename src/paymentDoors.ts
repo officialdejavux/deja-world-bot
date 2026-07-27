@@ -6,15 +6,16 @@ import {
   logEvent,
   type AccessRequestKind,
   type AccessType,
+  type ManualPaymentRequest,
   type ManualPaymentType
 } from "./storage.js";
 
-export type StripeDoorArea = "menu" | "keep_messaging" | "girlfriend" | "private" | "spoil" | "entry";
+export type PaymentDoorArea = "menu" | "keep_messaging" | "girlfriend" | "private" | "spoil" | "entry";
 
-type StripeDoorKey = "exclusive" | "closer" | "stay" | "gfe" | "private" | "monthly";
+type PaymentDoorKey = "exclusive" | "closer" | "stay" | "gfe" | "private" | "monthly";
 
-type StripeDoor = {
-  key: StripeDoorKey;
+type PaymentDoor = {
+  key: PaymentDoorKey;
   label: string;
   requestKind: AccessRequestKind;
   accessType?: AccessType;
@@ -42,7 +43,7 @@ const venmoLink = envLink("VENMO_LINK", "https://venmo.com/Dejjavu");
 const paypalLink = envLink("PAYPAL_LINK", "https://paypal.me/Darinamess");
 
 // External payment doors stay direct-only. They do not auto-open access.
-const stripeDoors: StripeDoor[] = [
+const paymentDoors: PaymentDoor[] = [
   {
     key: "exclusive",
     label: "The Exclusive Entrance",
@@ -79,7 +80,7 @@ const stripeDoors: StripeDoor[] = [
   }
 ];
 
-const areaDoorKeys: Record<StripeDoorArea, StripeDoorKey[]> = {
+const areaDoorKeys: Record<PaymentDoorArea, PaymentDoorKey[]> = {
   menu: ["exclusive", "closer", "stay", "gfe", "private", "monthly"],
   keep_messaging: ["stay", "closer"],
   girlfriend: ["gfe", "monthly"],
@@ -100,9 +101,9 @@ const supportCopy =
 const termsCopy =
   "Deja World is an 18+ private digital experience. Payments are for digital access, support, interaction, or curated online experiences. No payment guarantees anything outside the stated digital offer. Be respectful, intentional, and clear.\n\nA little clarity, love: some doors here are automated to keep the world open when I’m away. Anything personally sent by me will be clear, and paid access does not promise live replies.";
 
-function doorsForArea(area: StripeDoorArea): StripeDoor[] {
+function doorsForArea(area: PaymentDoorArea): PaymentDoor[] {
   const keys = new Set(areaDoorKeys[area]);
-  return stripeDoors.filter((door) => keys.has(door.key));
+  return paymentDoors.filter((door) => keys.has(door.key));
 }
 
 function directPaymentMethods(): Array<Required<DirectPaymentMethod>> {
@@ -113,20 +114,20 @@ function directPaymentMethods(): Array<Required<DirectPaymentMethod>> {
   ].filter((method): method is Required<DirectPaymentMethod> => Boolean(method.url));
 }
 
-function stripeAreaKeyboard(area: StripeDoorArea): InlineKeyboard {
+function paymentAreaKeyboard(area: PaymentDoorArea): InlineKeyboard {
   const keyboard = new InlineKeyboard();
 
   keyboard.text("Instant Stars Access", "DEJA_ALWAYS").row();
 
   for (const door of doorsForArea(area)) {
-    keyboard.text(door.label, `STRIPE_CONFIRM_${door.key}`).row();
+    keyboard.text(door.label, `PAYMENT_CONFIRM_${door.key}`).row();
   }
 
   keyboard.text("Main Menu", "MENU");
   return keyboard;
 }
 
-function directPaymentKeyboard(door: StripeDoor): InlineKeyboard {
+function directPaymentKeyboard(door: PaymentDoor): InlineKeyboard {
   const keyboard = new InlineKeyboard();
 
   for (const method of directPaymentMethods()) {
@@ -142,7 +143,7 @@ function directPaymentKeyboard(door: StripeDoor): InlineKeyboard {
   }
 
   keyboard.text("I sent a manual payment", "MANUAL_PAYMENT_START").row();
-  keyboard.text("Choose Your Door", "STRIPE_DOORS").text("Main Menu", "MENU");
+  keyboard.text("Choose Your Door", "PAYMENT_DOORS").text("Main Menu", "MENU");
   return keyboard;
 }
 
@@ -192,47 +193,73 @@ function getManualDraft(userId: string): ManualPaymentDraft | undefined {
   return draft;
 }
 
-async function notifyManualPaymentAdmins(ctx: Context, requestId: string, userId: string, selectedType: ManualPaymentType, note?: string): Promise<void> {
+async function notifyManualPaymentAdmins(ctx: Context, request: ManualPaymentRequest): Promise<void> {
   if (config.adminTelegramIds.length === 0) return;
-  const accessType = manualAccessType(selectedType);
+  const accessType = manualAccessType(request.selectedType);
   const message = [
     "Manual payment request needs review",
     "",
-    `Request ID: ${requestId}`,
+    `Request ID: ${request.requestId}`,
     `User: ${ctx.from?.first_name ?? "Unknown"}${ctx.from?.username ? ` (@${ctx.from.username})` : ""}`,
-    `Telegram ID: ${userId}`,
-    `Selected type: ${selectedType}`,
-    note ? `Note: ${note}` : "Note: attachment only or no note",
+    `Telegram ID: ${request.userId}`,
+    `Selected type: ${request.selectedType}`,
+    request.note ? `Note: ${request.note}` : "Note: attachment only or no note",
+    request.attachmentType ? `Attachment: ${request.attachmentType}` : undefined,
     "",
     "Manual payments do not unlock automatically."
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   for (const adminId of config.adminTelegramIds) {
     try {
       await ctx.api.sendMessage(adminId, message, {
-        reply_markup: adminReviewKeyboard(userId, manualRequestKind(selectedType), accessType)
+        reply_markup: adminReviewKeyboard(
+          request.userId,
+          manualRequestKind(request.selectedType),
+          accessType,
+          request.requestId
+        )
       });
     } catch {
       // Admin notification should never interrupt the user flow.
+      continue;
+    }
+
+    if (!request.attachmentFileId || !request.attachmentType) continue;
+
+    try {
+      const caption = `Payment proof for ${request.requestId}`;
+      if (request.attachmentType === "photo") {
+        await ctx.api.sendPhoto(adminId, request.attachmentFileId, { caption });
+      } else {
+        await ctx.api.sendDocument(adminId, request.attachmentFileId, { caption });
+      }
+    } catch {
+      try {
+        await ctx.api.sendMessage(adminId, `The attachment for ${request.requestId} could not be delivered. Ask for new proof.`);
+      } catch {
+        // A failed admin notification must not interrupt the customer flow.
+      }
     }
   }
 }
 
-export async function sendStripeArea(ctx: Context, area: StripeDoorArea, intro = "Or choose a payment door below."): Promise<void> {
+export async function sendPaymentArea(ctx: Context, area: PaymentDoorArea, intro = "Or choose a payment door below."): Promise<void> {
   await logEvent("manual_payment_door_opened", { userId: ctx.from?.id, area });
   await ctx.reply(`${intro}\n\n${directPaymentCopy}`, {
-    reply_markup: stripeAreaKeyboard(area)
+    reply_markup: paymentAreaKeyboard(area)
   });
 }
 
-export async function sendStripePaymentMenu(ctx: Context): Promise<void> {
-  await sendStripeArea(ctx, "menu", `Choose Your Door\n\n${paymentMenuCopy}`);
+export async function sendPaymentMenu(ctx: Context): Promise<void> {
+  await sendPaymentArea(ctx, "menu", `Choose Your Door\n\n${paymentMenuCopy}`);
 }
 
 async function sendDirectPaymentDoor(ctx: Context, key: string): Promise<void> {
-  const door = stripeDoors.find((item) => item.key === key);
+  const door = paymentDoors.find((item) => item.key === key);
   if (!door) {
-    await sendStripePaymentMenu(ctx);
+    await sendPaymentMenu(ctx);
     return;
   }
 
@@ -245,7 +272,7 @@ async function sendDirectPaymentDoor(ctx: Context, key: string): Promise<void> {
   );
 }
 
-export function registerStripeDoorHandlers(bot: Bot): void {
+export function registerPaymentDoorHandlers(bot: Bot): void {
   bot.command("terms", async (ctx) => {
     await ctx.reply(termsCopy, {
       reply_markup: new InlineKeyboard().text("Main Menu", "MENU")
@@ -258,9 +285,9 @@ export function registerStripeDoorHandlers(bot: Bot): void {
     });
   });
 
-  bot.callbackQuery("STRIPE_DOORS", async (ctx) => {
+  bot.callbackQuery("PAYMENT_DOORS", async (ctx) => {
     await ctx.answerCallbackQuery();
-    await sendStripePaymentMenu(ctx);
+    await sendPaymentMenu(ctx);
   });
 
   bot.callbackQuery("MANUAL_PAYMENT_START", async (ctx) => {
@@ -290,17 +317,17 @@ export function registerStripeDoorHandlers(bot: Bot): void {
     await ctx.answerCallbackQuery({ text: "Manual review canceled." });
     manualPaymentDrafts.delete(String(ctx.from.id));
     await ctx.reply("Manual review canceled.", {
-      reply_markup: new InlineKeyboard().text("Choose Your Door", "STRIPE_DOORS").text("Main Menu", "MENU")
+      reply_markup: new InlineKeyboard().text("Choose Your Door", "PAYMENT_DOORS").text("Main Menu", "MENU")
     });
   });
 
-  bot.callbackQuery(/^STRIPE_RETURN_(menu|keep_messaging|girlfriend|private|spoil|entry)$/, async (ctx) => {
+  bot.callbackQuery(/^PAYMENT_RETURN_(menu|keep_messaging|girlfriend|private|spoil|entry)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
-    const area = ctx.match[1] as StripeDoorArea;
-    await sendStripeArea(ctx, area, "That return button has been replaced with verified payment doors.");
+    const area = ctx.match[1] as PaymentDoorArea;
+    await sendPaymentArea(ctx, area, "That return button has been replaced with verified payment doors.");
   });
 
-  bot.callbackQuery(/^STRIPE_CONFIRM_(exclusive|closer|stay|gfe|private|monthly)$/, async (ctx) => {
+  bot.callbackQuery(/^PAYMENT_CONFIRM_(exclusive|closer|stay|gfe|private|monthly)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     await sendDirectPaymentDoor(ctx, ctx.match[1]);
   });
@@ -318,12 +345,18 @@ export function registerStripeDoorHandlers(bot: Bot): void {
       return;
     }
 
-    const note = "text" in ctx.message && ctx.message.text ? ctx.message.text.trim() : undefined;
+    const note =
+      "text" in ctx.message && ctx.message.text
+        ? ctx.message.text.trim()
+        : "caption" in ctx.message && ctx.message.caption
+          ? ctx.message.caption.trim()
+          : undefined;
     const photoFileId =
       "photo" in ctx.message && Array.isArray(ctx.message.photo) ? ctx.message.photo.at(-1)?.file_id : undefined;
     const documentFileId =
       "document" in ctx.message && ctx.message.document ? ctx.message.document.file_id : undefined;
     const attachmentFileId = photoFileId ?? documentFileId;
+    const attachmentType = photoFileId ? "photo" : documentFileId ? "document" : undefined;
 
     if (!note && !attachmentFileId) {
       await ctx.reply("Send a short note or a screenshot so I know what to review.");
@@ -332,11 +365,12 @@ export function registerStripeDoorHandlers(bot: Bot): void {
 
     const { request } = await createManualPaymentRequest(ctx.from, draft.selectedType, {
       ...(note ? { note } : {}),
-      ...(attachmentFileId ? { attachmentFileId } : {})
+      ...(attachmentFileId ? { attachmentFileId } : {}),
+      ...(attachmentType ? { attachmentType } : {})
     });
 
     manualPaymentDrafts.delete(userId);
-    await notifyManualPaymentAdmins(ctx, request.requestId, userId, draft.selectedType, note);
+    await notifyManualPaymentAdmins(ctx, request);
     await logEvent("manual_proof_submitted", {
       userId,
       type: draft.selectedType,
